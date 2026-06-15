@@ -1,0 +1,14 @@
+# SOURCE DATA (immutable) — events pinned to a set time. The solver works around them.
+# Fill in your own. Times are "HH:MM" in a single day.
+#
+# Each event:
+#   name          unique label
+#   start         when it begins
+#   duration_min  how long it lasts
+#   is_meal       true marks it as a meal for the meal->exercise gap rule
+
+fixed_events: []
+  # - name: breakfast
+  #   start: "07:30"
+  #   duration_min: 30
+  #   is_meal: true
