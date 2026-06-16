@@ -1,3 +1,0 @@
-# Runtime dependencies (see pyproject.toml for the authoritative list)
-ortools>=9.15
-pyyaml>=6.0
