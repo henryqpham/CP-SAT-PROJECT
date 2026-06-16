@@ -1,20 +1,22 @@
-# The real model lives here once scratch.py works. You write this part —
-# it's the CP-SAT you're here to learn. Don't let me fill it in for you.
+# YOU write this — it's the CP-SAT you're here to learn.
 #
-# Shape to aim for:
-#   1. load activities.yaml + scenario.yaml (pyyaml)
-#   2. one interval var per activity
-#   3. constraints: no_overlap, time windows, "no kite -> sail twice as long"
-#   4. an objective (e.g. minimize when you get home), then solve + print
+# Input:  a validated models.Scenario.
+# Output: a dict the dashboard renders. Use this shape so static/app.js works:
+#   {"status": "OPTIMAL", "schedule": [{"id": "sail", "start": 600, "end": 720}, ...]}
+#   {"status": "INFEASIBLE", "conflict": ["c1", "c2"]}   # optional: which rules clashed
+#   (start/end are minutes from midnight; 600 = 10:00.)
 #
-# CP-SAT toolbox: CpModel, new_int_var, new_interval_var,
-# new_fixed_size_interval_var, add_no_overlap, only_enforce_if,
-# add_max_equality, minimize, CpSolver().solve(model).
+# Translate each constraint by its "type" (skip any where enabled is false):
+#   time_window  -> model.add(start >= earliest);  model.add(end <= latest_end)
+#   no_overlap   -> model.add_no_overlap([intervals])
+#   precedence   -> model.add(end_before <= start_after)
+#   conditional  -> a BoolVar + model.add(...).only_enforce_if(...)
+#
+# CP-SAT toolbox: CpModel, new_int_var, new_fixed_size_interval_var, add_no_overlap,
+# only_enforce_if, add_max_equality, minimize, CpSolver().solve(model).
+
+from models import Scenario
 
 
-def solve():
-    raise NotImplementedError("Write the CP-SAT model here.")
-
-
-if __name__ == "__main__":
-    solve()
+def solve(scenario: Scenario) -> dict:
+    raise NotImplementedError("Write the CP-SAT model in solver.py")

@@ -1,0 +1,63 @@
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 800px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+button {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+}
+.card {
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  margin: 0.5rem 0;
+}
+.card.off {
+  opacity: 0.45;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.field {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+}
+.field input {
+  margin-left: 0.3rem;
+}
+.card small {
+  display: block;
+  margin-top: 0.35rem;
+  color: #777;
+  font-style: italic;
+}
+#timeline {
+  position: relative;
+  height: 2.2rem;
+  background: #f0f0f0;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+.bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: #4a90d9;
+  color: #fff;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  overflow: hidden;
+}

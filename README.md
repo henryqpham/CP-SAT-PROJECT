@@ -1,49 +1,103 @@
 # CP-SAT-PROJECT
 
-A learning project: a tiny **personal scheduling optimizer** built on Google OR-Tools
-**CP-SAT**. You write the model yourself — that's the point.
+A **natural-language scheduling optimizer**: type a plain-English description of your day,
+watch it become editable constraint blocks, and let **CP-SAT** (Google OR-Tools) find a
+schedule that fits — or prove none exists. One local Flask app, Python only. Learning /
+portfolio project.
 
-**The scenario:** plan a day at the lake. Drive there, grab a hamburger, sail, maybe
-kiteboard, drive home — without overlaps, inside a time window, and *if you skip
-kiteboarding, sail twice as long*. CP-SAT finds a schedule that fits the rules, or proves
-none exists.
+> _"Go to Lake Michigan, leave after 8 AM, grab a hamburger, sail, maybe kiteboard — and if I
+> can't kiteboard, sail twice as long — be home by 10 PM."_ → a solved, editable timetable.
 
-## Files
+## How it works
 
-| File | What it is |
-|------|------------|
-| `scratch.py` | **Start here.** Throwaway: build → solve → print → break it. |
-| `solver.py` | The real model, once scratch works. *You write the CP-SAT part.* |
-| `activities.yaml` | Inputs: the activities + durations. Facts, not rules. |
-| `scenario.yaml` | The rules you edit: time windows, kite→sail logic. |
+Claude turns the sentence into a **typed JSON** list of constraints. You review and edit the
+numbers in the dashboard; CP-SAT re-solves instantly. The LLM only *drafts* — the JSON is the
+source of truth and you approve it. That review step is the reliability move: an LLM can return
+a clean-looking schedule while silently dropping a rule, so we validate the **constraints**,
+not just the result. Every constraint carries the `source` phrase it came from.
+
+One Flask app serves the dashboard plus two JSON endpoints — `/parse` (sentence → JSON via
+Claude) and `/solve` (JSON → schedule via CP-SAT). No build step, no npm, no database.
 
 ```mermaid
 flowchart LR
-    A["activities.yaml<br/>(inputs)"] --> S["solver.py<br/>(CP-SAT)"]
-    R["scenario.yaml<br/>(rules)"] --> S
-    S --> O["schedule<br/>(printed)"]
+    U(["User"]) -->|sentence| FE["Dashboard<br/>HTML + vanilla JS"]
+
+    subgraph FLASK["Flask app (app.py)"]
+        direction TB
+        PARSE["/parse"]
+        SOLVE["/solve<br/>CP-SAT"]
+        MODELS["models.py<br/>Pydantic IR"]
+    end
+
+    CLAUDE(["Claude API"])
+
+    FE -->|sentence| PARSE
+    PARSE --> CLAUDE
+    CLAUDE -->|constraints JSON| PARSE
+    PARSE -->|editable IR| FE
+    FE -->|edited IR| SOLVE
+    SOLVE -->|schedule| FE
+    MODELS -.validates.-> PARSE
+    MODELS -.validates.-> SOLVE
 ```
 
-## Setup
+Data flow: **sentence → (Claude) → editable JSON → (you tweak) → CP-SAT → schedule → repeat.**
+
+## Structure
+
+```
+CP-SAT-PROJECT/
+├── app.py               # Flask: / (dashboard), /parse (Claude), /solve (CP-SAT)
+├── models.py            # Pydantic IR: Activity + constraint union — the JSON contract
+├── parse.py             # Claude: sentence -> validated Scenario
+├── solver.py            # ← YOU write: Scenario -> CP-SAT -> schedule
+├── examples/lake.json   # hand-written IR to test /solve without the LLM
+├── templates/index.html
+├── static/app.js        # fetch /parse + /solve, render cards + Gantt
+├── static/style.css
+├── requirements.txt
+└── .env.example         # ANTHROPIC_API_KEY=
+```
+
+**What you write vs. plumbing**
+- **Yours (the CP-SAT you're here to learn):** `solver.py` — translate each constraint into a
+  CP-SAT call (`add_no_overlap`, `only_enforce_if`, time-window bounds…).
+- **Plumbing (already scaffolded):** `models.py`, `parse.py`, `app.py`, `templates/`, `static/`.
+
+## The intermediate format (IR)
+
+One typed JSON document the LLM produces and you edit. Each constraint `type` maps 1:1 to a
+CP-SAT call; `enabled` toggles a rule without losing its numbers; `source` is the phrase it
+came from. Full example in `examples/lake.json`:
+
+```jsonc
+{
+  "activities": [{ "id": "sail", "duration": 120 }],
+  "constraints": [
+    { "id": "c2", "type": "time_window", "activity": "drive_home",
+      "latest_end": "22:00", "enabled": true, "label": "Home by 10 PM" },
+    { "id": "c5", "type": "conditional",
+      "when": { "activity": "kiteboard", "present": false },
+      "then": { "set_duration": { "activity": "sail", "factor": 2 } },
+      "enabled": true, "label": "If no kite, sail twice as long" }
+  ]
+}
+```
+
+## Setup & run
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install ortools pyyaml
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env          # then paste your ANTHROPIC_API_KEY
+flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-## How to work
+The dashboard and `/solve` work without an API key; only `/parse` needs Claude.
 
-1. Open `scratch.py`. Hardcode 2–3 activities, build a model, solve, print.
-2. Add `add_no_overlap` and a time window. Make it `INFEASIBLE` on purpose, then fix it.
-3. Once it works, port the clean version into `solver.py` and wire up the YAML files.
+## Notes
 
-Grow the structure only when it hurts: add a `results/` folder when you start comparing
-scenarios; split a `constraints.py` out of `solver.py` when one file feels too long.
-
-## CP-SAT reference
-
-`ortools.sat.python.cp_model`: `CpModel`, `new_int_var`, `new_interval_var`,
-`new_fixed_size_interval_var`, `add_no_overlap`, `only_enforce_if`, `add_max_equality`,
-`minimize`, `CpSolver().solve(model)`.
-Docs: https://developers.google.com/optimization/cp/cp_solver
+- Local-only portfolio/demo — no database, no auth, no hosting.
+- Build order that never blocks you: `models.py` → `solver.py` (test with `examples/lake.json`)
+  → dashboard → `/parse` (Claude) last. The app works end-to-end before the LLM exists.

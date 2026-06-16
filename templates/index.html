@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Schedule Optimizer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <h1>Schedule Optimizer</h1>
+
+    <section id="input">
+      <textarea id="sentence" rows="3"
+        placeholder="Describe your day in plain English..."></textarea>
+      <button id="parse-btn">Parse &rarr;</button>
+    </section>
+
+    <section id="board">
+      <div id="constraints"></div>
+      <button id="solve-btn">Solve</button>
+    </section>
+
+    <section id="result">
+      <p id="status"></p>
+      <div id="timeline"></div>
+    </section>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

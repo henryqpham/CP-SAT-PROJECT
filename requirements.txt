@@ -1,0 +1,5 @@
+flask
+ortools
+anthropic
+pydantic
+python-dotenv

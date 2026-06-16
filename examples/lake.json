@@ -1,0 +1,26 @@
+{
+  "activities": [
+    { "id": "drive_to_lake", "duration": 90 },
+    { "id": "hamburger", "duration": 30 },
+    { "id": "sail", "duration": 120 },
+    { "id": "kiteboard", "duration": 120 },
+    { "id": "drive_home", "duration": 90 }
+  ],
+  "constraints": [
+    { "type": "time_window", "id": "c1", "activity": "drive_to_lake",
+      "earliest": "08:00", "enabled": true,
+      "label": "Leave no earlier than 8 AM", "source": "can't leave earlier than 8:00 AM" },
+    { "type": "time_window", "id": "c2", "activity": "drive_home",
+      "latest_end": "22:00", "enabled": true,
+      "label": "Home by 10 PM", "source": "need to be back home by 10 PM" },
+    { "type": "no_overlap", "id": "c3", "activities": "all", "enabled": true,
+      "label": "One thing at a time", "source": "" },
+    { "type": "precedence", "id": "c4", "before": "drive_to_lake", "after": "sail",
+      "enabled": true, "label": "Drive to the lake before sailing", "source": "" },
+    { "type": "conditional", "id": "c5",
+      "when": { "activity": "kiteboard", "present": false },
+      "then": { "set_duration": { "activity": "sail", "factor": 2 } },
+      "enabled": true, "label": "If no kite, sail twice as long",
+      "source": "if I can't kiteboard then I want to sail twice as long" }
+  ]
+}
