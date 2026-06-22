@@ -10,44 +10,36 @@ class Activity(BaseModel):
     duration: int  # minutes
 
 
-class TimeWindow(BaseModel):
-    type: Literal["time_window"] = "time_window"
+class _Constraint(BaseModel):
+    # Fields every constraint shares; each variant below adds its own `type` + data.
     id: str
+    enabled: bool = True
+    label: str = ""
+    source: str = ""
+
+
+class TimeWindow(_Constraint):
+    type: Literal["time_window"] = "time_window"
     activity: str
     earliest: Optional[str] = None    # "HH:MM"
     latest_end: Optional[str] = None  # "HH:MM"
-    enabled: bool = True
-    label: str = ""
-    source: str = ""
 
 
-class NoOverlap(BaseModel):
+class NoOverlap(_Constraint):
     type: Literal["no_overlap"] = "no_overlap"
-    id: str
     activities: Union[Literal["all"], list[str]] = "all"
-    enabled: bool = True
-    label: str = ""
-    source: str = ""
 
 
-class Precedence(BaseModel):
+class Precedence(_Constraint):
     type: Literal["precedence"] = "precedence"
-    id: str
     before: str  # this activity ends before...
     after: str   # ...this one starts
-    enabled: bool = True
-    label: str = ""
-    source: str = ""
 
 
-class Conditional(BaseModel):
+class Conditional(_Constraint):
     type: Literal["conditional"] = "conditional"
-    id: str
     when: dict   # e.g. {"activity": "kiteboard", "present": false}
     then: dict   # e.g. {"set_duration": {"activity": "sail", "factor": 2}}
-    enabled: bool = True
-    label: str = ""
-    source: str = ""
 
 
 # The discriminated union: pick the variant by its "type" field.

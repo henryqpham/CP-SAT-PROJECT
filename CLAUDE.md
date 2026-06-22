@@ -33,8 +33,6 @@ the architecture and data flow.
   cloud LLM calls, no API keys. Don't reintroduce a hosted API. Override the model with the
   `OLLAMA_MODEL` env var; read config from the environment, never hardcode it.
 - New Python dependencies go in `requirements.txt` in the same change that imports them.
-- IMPORTANT: `solver.py` (the CP-SAT model) is the owner's to write for learning. Offer hints
-  and small isolated examples; do not implement it unless the owner explicitly asks.
 
 ## Testing
 

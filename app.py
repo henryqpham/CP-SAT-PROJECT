@@ -1,6 +1,13 @@
+<<<<<<< HEAD
+# Flask app: serves the dashboard and the JSON endpoints.
+import json
+import re
+from pathlib import Path
+=======
 # Flask app: serves the dashboard and three JSON endpoints.
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
+>>>>>>> parent of 431418b (Overhaul the dashboard: real Gantt, editor, states, examples)
 
 from dotenv import load_dotenv
 

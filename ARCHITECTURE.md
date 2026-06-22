@@ -21,10 +21,10 @@ The trick is that it does this in three stages, and the middle stage is the impo
 
 ```
 sentence  ->  editable typed JSON (the "IR")  ->  CP-SAT solver  ->  dashboard schedule
-            (Claude drafts it)   (you review/edit)  (does the math)   (Gantt chart)
+          (local LLM drafts)   (you review/edit)  (does the math)   (Gantt chart)
 ```
 
-1. **Sentence → JSON.** An LLM (Claude) reads your sentence and drafts a structured list of
+1. **Sentence → JSON.** An LLM — a local Ollama model — reads your sentence and drafts a structured list of
    activities and constraints. This JSON is called the **IR** — the *intermediate representation*.
    Think of it as a typed, machine-readable form of your sentence.
 
@@ -41,7 +41,7 @@ sentence  ->  editable typed JSON (the "IR")  ->  CP-SAT solver  ->  dashboard s
    that none exists.
 
 Everything runs locally in one small Flask app. No database, no build step, no hosting. The
-dashboard and the solver work without any API key — only the sentence-parsing step calls Claude.
+dashboard and the solver work without any LLM — only the sentence-parsing step calls a local Ollama model (no API key, nothing leaves your machine).
 
 ---
 
@@ -57,13 +57,13 @@ endpoints.
 | `parse.py` | Calls Claude to turn a sentence into a validated `Scenario`, with one repair retry. |
 | `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it. |
 | `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable constraint cards + a Gantt-style timeline. |
-| `examples/lake.json` | A hand-written IR so you can exercise `/solve` without an API key. |
+| `examples/lake.json` | A hand-written IR so you can exercise `/solve` without the LLM running. |
 
 ### The routes
 
 - **`GET /`** — serves `index.html`, the dashboard.
 - **`POST /parse`** — body is `{"sentence": "..."}`. Hands it to `parse_sentence()`, which calls
-  Claude and returns the validated IR as JSON. This is the only route that needs an API key.
+  a local Ollama model and returns the validated IR as JSON. This is the only route that needs Ollama running.
 - **`POST /solve`** — body is a full IR (the edited JSON). Validates it against `models.Scenario`,
   runs `solve()`, returns `{"status": ..., "schedule": [...]}`.
 - **`GET /example`** — returns the contents of `examples/lake.json`, so "Load example" works
@@ -100,11 +100,11 @@ flowchart LR
         IR["models.py<br/>(IR contract)"]
     end
 
-    CLAUDE(["Claude API"])
+    LLM(["Local LLM<br/>(Ollama)"])
 
     FE -->|sentence| PARSE
-    PARSE --> CLAUDE
-    CLAUDE -->|draft JSON| PARSE
+    PARSE --> LLM
+    LLM -->|draft JSON| PARSE
     PARSE -->|editable IR| FE
     FE -->|"Load example"| EXAMPLE
     EXAMPLE -->|demo IR| FE
@@ -318,12 +318,12 @@ Those two outcomes are exactly the smoke tests below.
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env          # paste your ANTHROPIC_API_KEY (only needed for /parse)
+ollama pull qwen2.5:7b          # one-time; install Ollama from ollama.com first (only needed for /parse)
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-Open the dashboard, click **Load example** (no API key needed), then **Solve**. To try your own
-sentence, type it and click **Parse →** first (this one needs the key).
+Open the dashboard, click **Load example** (no LLM needed), then **Solve**. To try your own
+sentence, type it and click **Parse →** first (this one needs a running local Ollama model).
 
 ### Test it (two smoke tests)
 

@@ -64,7 +64,7 @@ CP-SAT-PROJECT/
 ├── static/app.js        # fetch /parse + /solve, render cards + Gantt
 ├── static/style.css
 ├── requirements.txt
-└── .env.example         # ANTHROPIC_API_KEY=
+└── .env.example         # OLLAMA_MODEL= (optional local-model override)
 ```
 
 `solver.py` is the CP-SAT core — it translates each constraint into a CP-SAT call
