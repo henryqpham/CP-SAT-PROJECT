@@ -8,7 +8,7 @@ import ollama
 from models import Scenario
 
 # Local model served by Ollama at http://localhost:11434. Override via OLLAMA_MODEL.
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+MODEL = os.environ.get("OLLAMA_MODEL", "granite4.1:8b")
 
 SYSTEM = """You convert a plain-English description of a day into a scheduling IR.
 
@@ -24,7 +24,8 @@ activity. Omit it entirely if no overall span is given. A lone "after 8 AM" or "
 constraints: each has "id", "type", "enabled" (true), "label", and "source"
 (the exact phrase it came from). One of:
   {"type": "time_window", "activity": "<id>", "earliest": "HH:MM", "latest_end": "HH:MM"}
-  {"type": "no_overlap", "activities": "all"}
+  {"type": "no_overlap", "activities": "all"}                  // EVERY activity is mutually exclusive
+  {"type": "no_overlap", "activities": ["<id>", "<id>"]}       // ONLY these named activities are mutually exclusive
   {"type": "precedence", "before": "<id>", "after": "<id>"}
   {"type": "sequence", "activities": ["<id>", "<id>", ...]}  // ordered chain: each ends before the next begins
   {"type": "conditional",
@@ -40,7 +41,8 @@ Pick each constraint "type" by the phrase — do NOT default everything to no_ov
   order is known or implied, encode it as a sequence ending in X; if only some activities' order is
   stated, use a sequence of just those, in order
 - "if I can't / skip / don't X, then <do Y longer or more>" -> conditional (when.present=false + then.set_duration)
-- activities simply can't overlap / "one thing at a time" -> no_overlap (usually "all")
+- activities can't overlap / "one thing at a time" -> no_overlap. Use "all" only when EVERY
+  activity is mutually exclusive; if only specific named activities can't overlap, list just those ids.
 
 Rules:
 - Map ONLY what the sentence states. Do not invent unstated constraints.
@@ -85,7 +87,9 @@ def _ask(sentence: str, repair: str = "", previous: str = "") -> str:
                 {"role": "user", "content": content},
             ],
             format="json",  # valid-JSON mode; Pydantic checks the structure, repair-retry on failure
-            options={"temperature": 0, "num_predict": 2048},
+            # num_ctx raised from Ollama's ~4K default so longer inputs aren't silently truncated.
+            # 16384 ≈ ~25 pages; feed long docs in portions. On a small GPU this partly offloads to CPU.
+            options={"temperature": 0, "num_predict": 2048, "num_ctx": 16384},
         )
     except Exception as e:  # Ollama not running, or model not pulled
         raise RuntimeError(

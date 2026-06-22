@@ -332,7 +332,7 @@ Those two outcomes are exactly the smoke tests below.
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-ollama pull qwen2.5:7b          # one-time; install Ollama from ollama.com first (only needed for /parse)
+ollama pull granite4.1:8b       # one-time; install Ollama from ollama.com first (only needed for /parse)
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 

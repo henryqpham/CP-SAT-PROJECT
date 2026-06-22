@@ -7,7 +7,7 @@ the architecture and data flow.
 ## Commands
 
 - Install deps: `pip install -r requirements.txt`
-- Pull the local parse model (one-time): `ollama pull qwen2.5:7b` (install Ollama from ollama.com first)
+- Pull the local parse model (one-time): `ollama pull granite4.1:8b` (install Ollama from ollama.com first)
 - Run: `flask --app app run --debug` — dashboard at http://localhost:5000
 - Use without the LLM: GET `/example` (the demo IR), or POST `examples/lake.json` to `/solve`
 

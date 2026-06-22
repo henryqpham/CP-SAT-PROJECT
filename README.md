@@ -114,7 +114,7 @@ across the full 24h day. Full example in `examples/lake.json`:
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-ollama pull qwen2.5:7b          # install Ollama from ollama.com first; one-time ~4.7 GB download
+ollama pull granite4.1:8b       # install Ollama from ollama.com first; one-time ~5.3 GB download
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
