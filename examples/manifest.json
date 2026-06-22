@@ -1,0 +1,5 @@
+[
+  { "name": "lake", "title": "Lake day", "description": "The full demo — time windows, precedence, an optional kiteboard, and a conditional duration." },
+  { "name": "errands", "title": "Saturday errands", "description": "A simpler morning of errands with an ordering rule." },
+  { "name": "tight", "title": "Too tight (infeasible)", "description": "A leave-time so late that no schedule fits — shows the INFEASIBLE result." }
+]

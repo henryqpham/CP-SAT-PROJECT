@@ -22,6 +22,9 @@ the architecture and data flow.
 
 ## Conventions
 
+- IMPORTANT: Do NOT `git commit` on your own — make the edits, then let the owner review and
+  commit. Go through the owner first, and also before any destructive git op (`reset`,
+  `revert`, `checkout --`, `push --force`).
 - Before changing code, read README.md, then the file(s) you are about to change.
 - When you change a module, a command, the folder layout, or the IR in `models.py`, update
   README.md and its mermaid diagram in the same change.

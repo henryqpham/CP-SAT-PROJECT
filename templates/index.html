@@ -7,24 +7,60 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   </head>
   <body>
-    <h1>Schedule Optimizer</h1>
+    <main>
+      <header class="app-head">
+        <h1>Schedule Optimizer</h1>
+        <p class="tagline">Describe your day in plain English — get a solved, editable timetable.</p>
+      </header>
 
-    <section id="input">
-      <textarea id="sentence" rows="3"
-        placeholder="Describe your day in plain English..."></textarea>
-      <button id="parse-btn">Parse &rarr;</button>
-      <button id="example-btn">Load example</button>
-    </section>
+      <div id="alert" class="alert" role="alert" hidden></div>
 
-    <section id="board">
-      <div id="constraints"></div>
-      <button id="solve-btn">Solve</button>
-    </section>
+      <section class="panel">
+        <label class="lbl" for="sentence">Your day</label>
+        <textarea id="sentence" rows="3"
+          placeholder="e.g. Go to the lake, leave after 8 AM, sail, maybe kiteboard, be home by 10 PM…"></textarea>
+        <div class="row">
+          <button id="parse-btn" class="btn btn-primary">Parse →</button>
+          <span class="row-sep">or</span>
+          <select id="example-select" class="select" aria-label="Load an example">
+            <option value="">Load an example…</option>
+          </select>
+        </div>
+      </section>
 
-    <section id="result">
-      <p id="status"></p>
-      <div id="timeline"></div>
-    </section>
+      <section class="panel" id="board" hidden>
+        <div class="board-head">
+          <h2>Activities</h2>
+          <button id="add-activity" class="btn btn-ghost btn-sm">+ Activity</button>
+        </div>
+        <div id="activities"></div>
+
+        <div class="board-head">
+          <h2>Constraints</h2>
+          <div class="add-constraint">
+            <select id="add-constraint-type" class="select select-sm" aria-label="New constraint type">
+              <option value="time_window">Time window</option>
+              <option value="precedence">Precedence</option>
+              <option value="no_overlap">No overlap</option>
+              <option value="conditional">Conditional</option>
+            </select>
+            <button id="add-constraint" class="btn btn-ghost btn-sm">+ Constraint</button>
+          </div>
+        </div>
+        <div id="constraints"></div>
+
+        <button id="solve-btn" class="btn btn-primary btn-solve">Solve</button>
+      </section>
+
+      <section class="panel" id="result" hidden>
+        <div class="result-head">
+          <h2>Schedule</h2>
+          <span id="status" class="pill" aria-live="polite"></span>
+        </div>
+        <div id="banner" class="banner" hidden></div>
+        <div id="timeline"></div>
+      </section>
+    </main>
 
     <script src="{{ url_for('static', filename='app.js') }}"></script>
   </body>

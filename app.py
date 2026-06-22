@@ -1,17 +1,11 @@
-<<<<<<< HEAD
 # Flask app: serves the dashboard and the JSON endpoints.
 import json
 import re
 from pathlib import Path
-=======
-# Flask app: serves the dashboard and three JSON endpoints.
-import json  # noqa: E402
-from pathlib import Path  # noqa: E402
->>>>>>> parent of 431418b (Overhaul the dashboard: real Gantt, editor, states, examples)
 
 from dotenv import load_dotenv
 
-load_dotenv()  # load ANTHROPIC_API_KEY from .env before anything uses it
+load_dotenv()  # load any .env settings (e.g. OLLAMA_MODEL) before anything uses them
 
 from flask import Flask, jsonify, render_template, request  # noqa: E402
 
@@ -27,10 +21,25 @@ def index():
     return render_template("index.html")
 
 
+EXAMPLES_DIR = Path(__file__).parent / "examples"
+_EXAMPLE_NAME = re.compile(r"^[a-z0-9_]+$")
+
+
+@app.get("/examples")
+def examples_list():
+    # Names + titles for the dashboard's example dropdown.
+    return jsonify(json.loads((EXAMPLES_DIR / "manifest.json").read_text()))
+
+
 @app.get("/example")
-def example_route():
-    # The hand-written demo IR, so the dashboard is usable without an API key.
-    path = Path(__file__).parent / "examples" / "lake.json"
+@app.get("/example/<name>")
+def example_route(name="lake"):
+    # A hand-written demo IR, so the dashboard is usable without the LLM running.
+    if not _EXAMPLE_NAME.match(name):
+        return jsonify({"error": "invalid example name"}), 400
+    path = EXAMPLES_DIR / f"{name}.json"
+    if not path.exists():
+        return jsonify({"error": f"no example named '{name}'"}), 404
     return jsonify(json.loads(path.read_text()))
 
 

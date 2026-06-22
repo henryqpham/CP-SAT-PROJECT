@@ -1,0 +1,17 @@
+{
+  "activities": [
+    { "id": "drive_to_lake", "duration": 90 },
+    { "id": "sail", "duration": 120 },
+    { "id": "drive_home", "duration": 90 }
+  ],
+  "constraints": [
+    { "id": "c1", "type": "time_window", "activity": "drive_to_lake",
+      "earliest": "21:00", "enabled": true, "label": "Leave after 9 PM", "source": "leave after 9 PM" },
+    { "id": "c2", "type": "time_window", "activity": "drive_home",
+      "latest_end": "22:00", "enabled": true, "label": "Home by 10 PM", "source": "be home by 10 PM" },
+    { "id": "c3", "type": "no_overlap", "activities": "all", "enabled": true,
+      "label": "One thing at a time", "source": "" },
+    { "id": "c4", "type": "precedence", "before": "drive_to_lake", "after": "sail",
+      "enabled": true, "label": "Drive before sailing", "source": "" }
+  ]
+}
