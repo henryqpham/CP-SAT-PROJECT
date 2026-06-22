@@ -7,14 +7,15 @@ the architecture and data flow.
 ## Commands
 
 - Install deps: `pip install -r requirements.txt`
+- Pull the local parse model (one-time): `ollama pull qwen2.5:7b` (install Ollama from ollama.com first)
 - Run: `flask --app app run --debug` — dashboard at http://localhost:5000
-- Solve without the LLM: POST the contents of `examples/lake.json` to `/solve`
+- Use without the LLM: GET `/example` (the demo IR), or POST `examples/lake.json` to `/solve`
 
 ## Structure
 
-- `app.py` — Flask routes: `/` (dashboard), `/parse` (Claude), `/solve` (CP-SAT)
+- `app.py` — Flask routes: `/` (dashboard), `/parse` (Ollama), `/solve` (CP-SAT), `/example` (demo IR)
 - `models.py` — Pydantic IR; the JSON contract shared by `/parse`, the dashboard, and `/solve`
-- `parse.py` — Claude turns a sentence into a validated `Scenario`
+- `parse.py` — a local Ollama model turns a sentence into a validated `Scenario`
 - `solver.py` — turns a `Scenario` into a CP-SAT model and solves it
 - `templates/index.html`, `static/app.js`, `static/style.css` — the vanilla-JS dashboard
 - `examples/lake.json` — a hand-written IR for testing `/solve`
@@ -28,8 +29,9 @@ the architecture and data flow.
   in `static/app.js` — the IR is the single contract; keep the three in sync.
 - Validate the parsed constraints, not just the solve result: an LLM can return a valid-looking
   schedule while dropping a rule, so keep each constraint's `source` phrase and show it.
-- Keep the Anthropic API key in `.env` (gitignored); read it from the environment, never
-  hardcode or commit it.
+- Parsing runs on a LOCAL Ollama model by design (privacy: no data leaves the machine) — no
+  cloud LLM calls, no API keys. Don't reintroduce a hosted API. Override the model with the
+  `OLLAMA_MODEL` env var; read config from the environment, never hardcode it.
 - New Python dependencies go in `requirements.txt` in the same change that imports them.
 - IMPORTANT: `solver.py` (the CP-SAT model) is the owner's to write for learning. Offer hints
   and small isolated examples; do not implement it unless the owner explicitly asks.
