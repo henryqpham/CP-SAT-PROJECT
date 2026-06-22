@@ -39,6 +39,9 @@ Pick each constraint "type" by the phrase — do NOT default everything to no_ov
 Rules:
 - Map ONLY what the sentence states. Do not invent unstated constraints.
 - "back by / home by X" is a latest_end on the going-home activity, not a start time.
+- A time_window targets ONE named activity (a real activity id, never "all"). An overall
+  day span ("between 9 and 4", "my day runs 8 to 10") goes in `day` ONLY — do NOT also add a
+  time_window for it.
 - Use no_overlap only for non-overlap; never for times, ordering, or conditionals.
 - Give every constraint the exact source phrase so a human can review it.
 

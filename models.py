@@ -2,7 +2,7 @@
 # The LLM produces this; the user edits it; solver.py turns it into CP-SAT.
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Activity(BaseModel):
@@ -12,7 +12,7 @@ class Activity(BaseModel):
 
 class _Constraint(BaseModel):
     # Fields every constraint shares; each variant below adds its own `type` + data.
-    id: str
+    id: str = ""  # auto-filled (c1, c2, …) by Scenario if the LLM omits it
     enabled: bool = True
     label: str = ""
     source: str = ""
@@ -60,3 +60,11 @@ class Scenario(BaseModel):
     activities: list[Activity]
     constraints: list[Constraint]
     day: Optional[DayWindow] = None
+
+    @model_validator(mode="after")
+    def _fill_ids(self):
+        # Local LLMs often omit the constraint "id"; give each one a stable id.
+        for i, c in enumerate(self.constraints, 1):
+            if not c.id:
+                c.id = f"c{i}"
+        return self

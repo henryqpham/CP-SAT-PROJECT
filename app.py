@@ -45,8 +45,16 @@ def example_route(name="lake"):
 
 @app.post("/parse")
 def parse_route():
-    sentence = request.json["sentence"]
-    return jsonify(parse_sentence(sentence).model_dump())
+    sentence = (request.json or {}).get("sentence", "").strip()
+    if not sentence:
+        return jsonify({"error": "Type a sentence first."}), 400
+    try:
+        return jsonify(parse_sentence(sentence).model_dump())
+    except RuntimeError as e:  # Ollama not running / model not pulled
+        return jsonify({"error": str(e)}), 503
+    except Exception:  # the model's JSON didn't match the schema, etc.
+        return jsonify({"error": "The model couldn't turn that into a valid schedule. "
+                                 "Try rephrasing, or build it by hand / Load an example."}), 502
 
 
 @app.post("/solve")

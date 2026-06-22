@@ -148,8 +148,12 @@ def solve(scenario: Scenario) -> dict:
         # no day floor would just drift activities into the empty pre-dawn hours).
         tidy = max_end if day_set else (max_end - min_start)
         if presence:
-            # Presence dominates: one more activity beats any layout saving.
-            model.maximize((DAY + 1) * sum(presence.values()) - tidy)
+            # Keeping an activity must beat ANY layout saving. `tidy` ranges over
+            # [-DAY, DAY], so the per-activity weight has to exceed that whole
+            # range — otherwise a lone optional activity is dropped (empty
+            # schedule) because its absence drives `tidy` negative. (DAY+1 was
+            # too small: dropping scored DAY, keeping scored DAY+1 - duration.)
+            model.maximize((2 * DAY + 1) * sum(presence.values()) - tidy)
         else:
             model.minimize(tidy)
 
