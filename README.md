@@ -12,15 +12,16 @@ New to constraint solving? See [ARCHITECTURE.md](ARCHITECTURE.md) for a gentle, 
 
 ## How it works
 
-Claude turns the sentence into a **typed JSON** list of constraints. You review and edit the
+A **local LLM** — run via [Ollama](https://ollama.com), no API key — turns the sentence into a
+**typed JSON** list of constraints. You review and edit the
 numbers in the dashboard; CP-SAT re-solves instantly. The LLM only *drafts* — the JSON is the
 source of truth and you approve it. That review step is the reliability move: an LLM can return
 a clean-looking schedule while silently dropping a rule, so we validate the **constraints**,
 not just the result. Every constraint carries the `source` phrase it came from.
 
-One Flask app serves the dashboard plus three JSON endpoints — `/parse` (sentence → JSON via
-Claude), `/solve` (JSON → schedule via CP-SAT), and `/example` (the hand-written demo IR, so
-the dashboard is usable without an API key). No build step, no npm, no database.
+One Flask app serves the dashboard plus three JSON endpoints — `/parse` (sentence → JSON via a
+local Ollama model), `/solve` (JSON → schedule via CP-SAT), and `/example` (the hand-written
+demo IR, so the dashboard is usable without the LLM). No build step, no npm, no database.
 
 ```mermaid
 flowchart LR
@@ -34,11 +35,11 @@ flowchart LR
         MODELS["models.py<br/>Pydantic IR"]
     end
 
-    CLAUDE(["Claude API"])
+    LLM(["Local LLM<br/>(Ollama)"])
 
     FE -->|sentence| PARSE
-    PARSE --> CLAUDE
-    CLAUDE -->|constraints JSON| PARSE
+    PARSE --> LLM
+    LLM -->|constraints JSON| PARSE
     PARSE -->|editable IR| FE
     FE -->|"Load example"| EXAMPLE
     EXAMPLE -->|editable IR| FE
@@ -48,15 +49,15 @@ flowchart LR
     MODELS -.validates.-> SOLVE
 ```
 
-Data flow: **sentence → (Claude) → editable JSON → (you tweak) → CP-SAT → schedule → repeat.**
+Data flow: **sentence → (local LLM) → editable JSON → (you tweak) → CP-SAT → schedule → repeat.**
 
 ## Structure
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /parse (Claude), /solve (CP-SAT), /example (demo IR)
+├── app.py               # Flask: / (dashboard), /parse (Ollama), /solve (CP-SAT), /example (demo IR)
 ├── models.py            # Pydantic IR: Activity + constraint union — the JSON contract
-├── parse.py             # Claude: sentence -> validated Scenario
+├── parse.py             # local Ollama model: sentence -> validated Scenario
 ├── solver.py            # Scenario -> CP-SAT -> schedule
 ├── examples/lake.json   # hand-written IR to test /solve without the LLM
 ├── templates/index.html
@@ -95,14 +96,15 @@ came from. Full example in `examples/lake.json`:
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env          # then paste your ANTHROPIC_API_KEY
+ollama pull qwen2.5:7b          # install Ollama from ollama.com first; one-time ~4.7 GB download
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-The dashboard and `/solve` work without an API key; only `/parse` needs Claude.
+No API key needed — `/parse` calls a **local** model through Ollama (override with the
+`OLLAMA_MODEL` env var). The dashboard, `/solve`, and `/example` work even with Ollama stopped.
 
 ## Notes
 
 - Local-only portfolio/demo — no database, no auth, no hosting.
-- The dashboard and `/solve` run without an API key (test with `examples/lake.json`); only
-  `/parse` calls Claude.
+- No cloud, no API key: `/parse` runs a local Ollama model (offline); `/solve` and the dashboard
+  work even without it (test with `examples/lake.json`).

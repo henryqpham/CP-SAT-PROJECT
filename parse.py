@@ -1,11 +1,14 @@
-# Turn a plain-English sentence into a validated IR (models.Scenario).
-# Claude drafts the JSON; Pydantic validates it; one repair retry on failure.
-import anthropic
+# Turn a plain-English sentence into a validated IR (models.Scenario) with a
+# LOCAL Ollama model — no API key, runs offline. The model only DRAFTS the JSON;
+# Pydantic validates it and the dashboard lets you review/edit before solving.
+import os
+
+import ollama
 
 from models import Scenario
 
-MODEL = "claude-opus-4-8"
-_client = None
+# Local model served by Ollama at http://localhost:11434. Override via OLLAMA_MODEL.
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 
 SYSTEM = """You convert a plain-English description of a day into a scheduling IR.
 
@@ -22,10 +25,21 @@ constraints: each has "id", "type", "enabled" (true), "label", and "source"
    "when": {"activity": "<id>", "present": false},
    "then": {"set_duration": {"activity": "<id>", "factor": 2}}}
 
+Pick each constraint "type" by the phrase — do NOT default everything to no_overlap:
+- a clock time ("after 8 AM", "by 10 PM", "between 1 and 3") -> time_window (earliest and/or latest_end, "HH:MM")
+- "do X before Y" / "Y after X" -> precedence (before, after)
+- "if I can't / skip / don't X, then <do Y longer or more>" -> conditional (when.present=false + then.set_duration)
+- activities simply can't overlap / "one thing at a time" -> no_overlap (usually "all")
+
 Rules:
 - Map ONLY what the sentence states. Do not invent unstated constraints.
 - "back by / home by X" is a latest_end on the going-home activity, not a start time.
+- Use no_overlap only for non-overlap; never for times, ordering, or conditionals.
 - Give every constraint the exact source phrase so a human can review it.
+
+Example —
+Sentence: "Go to the lake, leave after 8 AM, grab a hamburger, sail, maybe kiteboard, and if I can't kiteboard sail twice as long, be home by 10 PM."
+JSON: {"activities":[{"id":"drive_to_lake","duration":90},{"id":"hamburger","duration":30},{"id":"sail","duration":120},{"id":"kiteboard","duration":120},{"id":"drive_home","duration":90}],"constraints":[{"id":"c1","type":"time_window","activity":"drive_to_lake","earliest":"08:00","enabled":true,"label":"Leave after 8 AM","source":"leave after 8 AM"},{"id":"c2","type":"time_window","activity":"drive_home","latest_end":"22:00","enabled":true,"label":"Home by 10 PM","source":"be home by 10 PM"},{"id":"c3","type":"no_overlap","activities":"all","enabled":true,"label":"One thing at a time","source":""},{"id":"c4","type":"precedence","before":"drive_to_lake","after":"sail","enabled":true,"label":"Drive before sailing","source":""},{"id":"c5","type":"conditional","when":{"activity":"kiteboard","present":false},"then":{"set_duration":{"activity":"sail","factor":2}},"enabled":true,"label":"If no kite, sail twice as long","source":"if I can't kiteboard, sail twice as long"}]}
 """
 
 
@@ -39,23 +53,28 @@ def parse_sentence(sentence: str) -> Scenario:
 
 
 def _ask(sentence: str, repair: str = "", previous: str = "") -> str:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
     content = sentence
     if repair:
         content = (
             f"Your previous output failed validation:\n{repair}\n\n"
             f"Previous output:\n{previous}\n\nReturn corrected JSON only."
         )
-    msg = _client.messages.create(
-        model=MODEL,
-        max_tokens=2000,
-        system=SYSTEM,
-        messages=[{"role": "user", "content": content}],
-    )
-    text = "".join(b.text for b in msg.content if b.type == "text").strip()
-    return _strip_fences(text)
+    try:
+        msg = ollama.chat(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": content},
+            ],
+            format="json",  # valid-JSON mode; Pydantic checks the structure, repair-retry on failure
+            options={"temperature": 0, "num_predict": 2048},
+        )
+    except Exception as e:  # Ollama not running, or model not pulled
+        raise RuntimeError(
+            f"Could not reach local Ollama model '{MODEL}'. Is Ollama running and the "
+            f"model pulled (`ollama pull {MODEL}`)? Original error: {e}"
+        )
+    return _strip_fences(msg.message.content.strip())
 
 
 def _strip_fences(text: str) -> str:
