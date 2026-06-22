@@ -157,6 +157,11 @@ def solve(scenario: Scenario) -> dict:
         else:
             model.minimize(tidy)
 
+    def add_precedence(before, after):
+        # `before` ends before `after` starts; skip unless both are real activities.
+        if before in ends and after in starts:
+            model.add(ends[before] <= starts[after])
+
     for c in scenario.constraints:
         if not c.enabled:
             continue
@@ -178,8 +183,13 @@ def solve(scenario: Scenario) -> dict:
                 model.add_no_overlap(ivs)
 
         elif c.type == "precedence":
-            if c.before in ends and c.after in starts:
-                model.add(ends[c.before] <= starts[c.after])
+            add_precedence(c.before, c.after)
+
+        elif c.type == "sequence":
+            # Chain of pairwise precedences over adjacent pairs; skip self-pairs.
+            for before, after in zip(c.activities, c.activities[1:]):
+                if before != after:
+                    add_precedence(before, after)
 
         # conditional: handled above when building the activity vars.
 

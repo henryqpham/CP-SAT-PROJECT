@@ -14,6 +14,7 @@ const colorFor = (id) => {
 
 // ---- wiring -------------------------------------------------------------
 loadExamples();
+addConstraintType("sequence", "Sequence (ordered)");
 
 $("parse-btn").onclick = () =>
   withBusy($("parse-btn"), "Parsing…", async () => {
@@ -153,6 +154,15 @@ function uniqueConstraintId() {
   } while (scenario.constraints.some((c) => c.id === id));
   return id;
 }
+// Register a constraint type in the "add constraint" picker if it isn't already listed.
+function addConstraintType(type, label) {
+  const sel = $("add-constraint-type");
+  if (!sel || [...sel.options].some((o) => o.value === type)) return;
+  const opt = document.createElement("option");
+  opt.value = type;
+  opt.textContent = label;
+  sel.append(opt);
+}
 function newConstraint(type) {
   const a0 = scenario.activities[0]?.id || "";
   const a1 = scenario.activities[1]?.id || a0;
@@ -163,6 +173,8 @@ function newConstraint(type) {
     return { ...base, before: a0, after: a1, label: "New precedence" };
   if (type === "no_overlap")
     return { ...base, activities: "all", label: "One thing at a time" };
+  if (type === "sequence")
+    return { ...base, activities: a0 ? (a1 !== a0 ? [a0, a1] : [a0]) : [], label: "New sequence" };
   if (type === "conditional")
     return {
       ...base,
@@ -266,7 +278,18 @@ function constraintFields(c) {
     f.push(activitySelect("before", c.before, (v) => (c.before = v)));
     f.push(activitySelect("after", c.after, (v) => (c.after = v)));
   } else if (c.type === "no_overlap") {
-    f.push(el_("div", "Applies to all activities.", "hint"));
+    const isAll = c.activities === "all" || c.activities == null;
+    f.push(selectField("applies to", isAll ? "all" : "specific", [
+      { value: "all", label: "All activities" },
+      { value: "specific", label: "Specific activities" },
+    ], (v) => {
+      c.activities = v === "all" ? "all" : (Array.isArray(c.activities) ? c.activities : []);
+      render();
+    }));
+    if (!isAll) f.push(activityChecklist(c.activities, (next) => (c.activities = next)));
+  } else if (c.type === "sequence") {
+    if (!Array.isArray(c.activities)) c.activities = [];
+    f.push(sequenceEditor(c.activities, (next) => (c.activities = next)));
   } else if (c.type === "conditional") {
     if (!c.when) c.when = { activity: "", present: false };
     if (!c.then) c.then = { set_duration: { activity: "", factor: 2 } };
@@ -445,6 +468,97 @@ function activitySelect(label, value, onChange) {
   sel.onchange = () => onChange(sel.value);
   wrap.append(sel);
   return wrap;
+}
+// Checkbox list for a no_overlap subset; `selected` is the current id array.
+// Includes any selected ids that no longer exist as activities, flagged "(missing: …)".
+function activityChecklist(selected, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.append(el_("span", "activities", "field-lbl"));
+  const list = document.createElement("div");
+  list.className = "checklist";
+  const ids = scenario.activities.map((a) => a.id);
+  const dangling = selected.filter((id) => !ids.includes(id));
+  const toggle = (id, on) => {
+    const next = selected.filter((x) => x !== id);
+    if (on) next.push(id);
+    onChange(next);
+    render();
+  };
+  for (const id of ids) {
+    list.append(checkboxRow(id, id, selected.includes(id), (on) => toggle(id, on)));
+  }
+  for (const id of dangling) {
+    list.append(checkboxRow(id, `(missing: ${id})`, true, (on) => toggle(id, on)));
+  }
+  if (!ids.length && !dangling.length)
+    list.append(el_("span", "No activities to choose from.", "hint"));
+  wrap.append(list);
+  return wrap;
+}
+function checkboxRow(value, label, checked, onChange) {
+  const row = document.createElement("label");
+  row.className = "check";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = checked;
+  cb.onchange = () => onChange(cb.checked);
+  row.append(cb);
+  row.append(el_("span", label));
+  return row;
+}
+// Ordered, editable list of activity slots for a sequence; top-to-bottom is array order.
+// `steps` is the current id array; each row picks its activity, with move/remove controls.
+function sequenceEditor(steps, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.append(el_("span", "steps (in order)", "field-lbl"));
+  const list = document.createElement("div");
+  list.className = "sequence";
+  const update = (next) => {
+    onChange(next);
+    render();
+  };
+  steps.forEach((id, i) => {
+    const row = document.createElement("div");
+    row.className = "seq-step";
+    row.append(el_("span", String(i + 1) + ".", "seq-num"));
+    row.append(activitySelect("", id, (v) => {
+      const next = steps.slice();
+      next[i] = v;
+      onChange(next);
+    }));
+    row.append(moveBtn("▲", "Move up", i === 0, () => {
+      const next = steps.slice();
+      [next[i - 1], next[i]] = [next[i], next[i - 1]];
+      update(next);
+    }));
+    row.append(moveBtn("▼", "Move down", i === steps.length - 1, () => {
+      const next = steps.slice();
+      [next[i], next[i + 1]] = [next[i + 1], next[i]];
+      update(next);
+    }));
+    row.append(deleteBtn(() => update(steps.filter((_, j) => j !== i))));
+    list.append(row);
+  });
+  if (!steps.length) list.append(el_("span", "No steps yet.", "hint"));
+  const add = document.createElement("button");
+  add.className = "btn btn-ghost btn-sm seq-add";
+  add.textContent = "+ Add step";
+  add.onclick = () => update([...steps, scenario.activities[0]?.id || ""]);
+  list.append(add);
+  wrap.append(list);
+  return wrap;
+}
+function moveBtn(glyph, title, disabled, onClick) {
+  const b = document.createElement("button");
+  b.className = "seq-move";
+  b.textContent = glyph;
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.disabled = disabled;
+  b.onclick = onClick;
+  return b;
 }
 function selectField(label, value, options, onChange) {
   const wrap = document.createElement("label");

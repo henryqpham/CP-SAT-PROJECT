@@ -26,13 +26,19 @@ constraints: each has "id", "type", "enabled" (true), "label", and "source"
   {"type": "time_window", "activity": "<id>", "earliest": "HH:MM", "latest_end": "HH:MM"}
   {"type": "no_overlap", "activities": "all"}
   {"type": "precedence", "before": "<id>", "after": "<id>"}
+  {"type": "sequence", "activities": ["<id>", "<id>", ...]}  // ordered chain: each ends before the next begins
   {"type": "conditional",
    "when": {"activity": "<id>", "present": false},
    "then": {"set_duration": {"activity": "<id>", "factor": 2}}}
 
 Pick each constraint "type" by the phrase — do NOT default everything to no_overlap:
 - a clock time ("after 8 AM", "by 10 PM", "between 1 and 3") -> time_window (earliest and/or latest_end, "HH:MM")
-- "do X before Y" / "Y after X" -> precedence (before, after)
+- ONE ordering of exactly two activities ("do X before Y", "Y after X") -> precedence (before, after)
+- a CHAIN of 2+ activities in a stated order ("first X, then Y, then Z", "X, then Y, finally Z",
+  "do these in order: X, Y, Z", "X before Y before Z") -> ONE sequence listing the ids in order
+- "make X last" / "X should be the last thing": there is no 'make last' primitive — when the full
+  order is known or implied, encode it as a sequence ending in X; if only some activities' order is
+  stated, use a sequence of just those, in order
 - "if I can't / skip / don't X, then <do Y longer or more>" -> conditional (when.present=false + then.set_duration)
 - activities simply can't overlap / "one thing at a time" -> no_overlap (usually "all")
 
@@ -48,6 +54,10 @@ Rules:
 Example —
 Sentence: "My day runs 8 AM to 10 PM. Go to the lake, leave after 8 AM, grab a hamburger, sail, maybe kiteboard, and if I can't kiteboard sail twice as long, be home by 10 PM."
 JSON: {"day":{"start":"08:00","end":"22:00"},"activities":[{"id":"drive_to_lake","duration":90},{"id":"hamburger","duration":30},{"id":"sail","duration":120},{"id":"kiteboard","duration":120},{"id":"drive_home","duration":90}],"constraints":[{"id":"c1","type":"time_window","activity":"drive_to_lake","earliest":"08:00","enabled":true,"label":"Leave after 8 AM","source":"leave after 8 AM"},{"id":"c2","type":"time_window","activity":"drive_home","latest_end":"22:00","enabled":true,"label":"Home by 10 PM","source":"be home by 10 PM"},{"id":"c3","type":"no_overlap","activities":"all","enabled":true,"label":"One thing at a time","source":""},{"id":"c4","type":"precedence","before":"drive_to_lake","after":"sail","enabled":true,"label":"Drive before sailing","source":""},{"id":"c5","type":"conditional","when":{"activity":"kiteboard","present":false},"then":{"set_duration":{"activity":"sail","factor":2}},"enabled":true,"label":"If no kite, sail twice as long","source":"if I can't kiteboard, sail twice as long"}]}
+
+Example (ordered chain) —
+Sentence: "First make coffee, then eat breakfast, then go for a run, and finally take a shower."
+JSON: {"activities":[{"id":"make_coffee","duration":10},{"id":"eat_breakfast","duration":20},{"id":"go_for_a_run","duration":40},{"id":"take_a_shower","duration":15}],"constraints":[{"id":"c1","type":"sequence","activities":["make_coffee","eat_breakfast","go_for_a_run","take_a_shower"],"enabled":true,"label":"Morning order","source":"first make coffee, then eat breakfast, then go for a run, and finally take a shower"}]}
 """
 
 

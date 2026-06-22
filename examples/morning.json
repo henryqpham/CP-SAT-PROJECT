@@ -1,0 +1,19 @@
+{
+  "day": { "start": "06:00", "end": "09:00" },
+  "activities": [
+    { "id": "coffee", "duration": 15 },
+    { "id": "shower", "duration": 20 },
+    { "id": "breakfast", "duration": 25 },
+    { "id": "commute", "duration": 40 }
+  ],
+  "constraints": [
+    { "id": "c1", "type": "no_overlap", "activities": "all", "enabled": true,
+      "label": "One thing at a time", "source": "" },
+    { "id": "c2", "type": "sequence", "activities": ["coffee", "shower", "breakfast", "commute"],
+      "enabled": true, "label": "First coffee, then shower, breakfast, then commute",
+      "source": "first coffee, then a shower, then breakfast, and finally commute to work" },
+    { "id": "c3", "type": "time_window", "activity": "commute",
+      "latest_end": "09:00", "enabled": true,
+      "label": "At work by 9 AM", "source": "need to be at work by 9 AM" }
+  ]
+}

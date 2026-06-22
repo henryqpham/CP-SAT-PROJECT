@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()  # load any .env settings (e.g. OLLAMA_MODEL) before anything uses them
 
 from flask import Flask, jsonify, render_template, request  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
@@ -59,7 +60,19 @@ def parse_route():
 
 @app.post("/solve")
 def solve_route():
-    scenario = Scenario.model_validate(request.json)
+    body = request.json if request.is_json else None
+    if body is None:
+        return jsonify({"error": "Send a JSON scenario body."}), 400
+    try:
+        scenario = Scenario.model_validate(body)
+    except ValidationError as e:
+        # Bad/invalid IR (missing fields, malformed HH:MM, …) — a client error.
+        # Keep only the JSON-safe bits of each error (drop the raw exception in
+        # `ctx`, which isn't serializable).
+        details = [{"loc": ".".join(str(p) for p in err["loc"]),
+                    "message": err["msg"]} for err in e.errors()]
+        return jsonify({"error": "That schedule isn't valid.",
+                        "details": details}), 400
     return jsonify(solve(scenario))
 
 

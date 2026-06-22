@@ -13,7 +13,7 @@ the architecture and data flow.
 
 ## Structure
 
-- `app.py` — Flask routes: `/` (dashboard), `/parse` (Ollama), `/solve` (CP-SAT), `/example` (demo IR)
+- `app.py` — Flask routes: `/` (dashboard), `/parse` (Ollama), `/solve` (CP-SAT), `/example` and `/example/<name>` (demo IR), `/examples` (dropdown manifest)
 - `models.py` — Pydantic IR; the JSON contract shared by `/parse`, the dashboard, and `/solve`
 - `parse.py` — a local Ollama model turns a sentence into a validated `Scenario`
 - `solver.py` — turns a `Scenario` into a CP-SAT model and solves it

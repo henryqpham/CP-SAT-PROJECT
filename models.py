@@ -1,8 +1,22 @@
 # Pydantic models for the intermediate representation (IR).
 # The LLM produces this; the user edits it; solver.py turns it into CP-SAT.
+import re
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# "HH:MM" with HH 00..24 and MM 00..59; "24:00" is the allowed end-of-day
+# sentinel, so accept hour 24 but reject anything past it (e.g. "24:30").
+_HHMM = re.compile(r"^([01]\d|2[0-4]):([0-5]\d)$")
+
+
+def _validate_hhmm(v: Optional[str]) -> Optional[str]:
+    # Shared by every "HH:MM" field; None (when allowed) passes through.
+    if v is None:
+        return v
+    if not _HHMM.match(v) or v > "24:00":
+        raise ValueError(f"expected HH:MM time (00:00–24:00), got {v!r}")
+    return v
 
 
 class Activity(BaseModel):
@@ -24,6 +38,8 @@ class TimeWindow(_Constraint):
     earliest: Optional[str] = None    # "HH:MM"
     latest_end: Optional[str] = None  # "HH:MM"
 
+    _check_times = field_validator("earliest", "latest_end")(_validate_hhmm)
+
 
 class NoOverlap(_Constraint):
     type: Literal["no_overlap"] = "no_overlap"
@@ -36,6 +52,11 @@ class Precedence(_Constraint):
     after: str   # ...this one starts
 
 
+class Sequence(_Constraint):
+    type: Literal["sequence"] = "sequence"
+    activities: list[str]  # ordered; each one ends before the next begins
+
+
 class Conditional(_Constraint):
     type: Literal["conditional"] = "conditional"
     when: dict   # e.g. {"activity": "kiteboard", "present": false}
@@ -44,7 +65,7 @@ class Conditional(_Constraint):
 
 # The discriminated union: pick the variant by its "type" field.
 Constraint = Annotated[
-    Union[TimeWindow, NoOverlap, Precedence, Conditional],
+    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional],
     Field(discriminator="type"),
 ]
 
@@ -54,6 +75,8 @@ class DayWindow(BaseModel):
     # activity), this bounds EVERY activity — "my day runs 8 AM to 10 PM".
     start: str = "00:00"  # "HH:MM"
     end: str = "24:00"    # "HH:MM"
+
+    _check_times = field_validator("start", "end")(_validate_hhmm)
 
 
 class Scenario(BaseModel):

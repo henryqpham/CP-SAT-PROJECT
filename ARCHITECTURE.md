@@ -52,9 +52,9 @@ endpoints.
 
 | File | Role |
 | --- | --- |
-| `app.py` | Flask routes: `/` (dashboard), `/parse` (sentence → JSON via Claude), `/solve` (JSON → schedule via CP-SAT), `/example` (serves the hand-written demo IR). |
+| `app.py` | Flask routes: `/` (dashboard), `/parse` (sentence → JSON via a local Ollama model), `/solve` (JSON → schedule via CP-SAT), `/example` (serves the hand-written demo IR). |
 | `models.py` | The IR defined as Pydantic types — the single JSON contract shared by parse, dashboard, and solve. |
-| `parse.py` | Calls Claude to turn a sentence into a validated `Scenario`, with one repair retry. |
+| `parse.py` | Calls a local Ollama model to turn a sentence into a validated `Scenario`, with one repair retry. |
 | `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it. |
 | `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable constraint cards + a Gantt-style timeline. |
 | `examples/lake.json` | A hand-written IR so you can exercise `/solve` without the LLM running. |
@@ -71,20 +71,29 @@ endpoints.
 
 ### The IR (`models.py`)
 
-The IR is two lists: `activities` and `constraints`.
+The IR is two lists — `activities` and `constraints` — plus an optional `day` window.
 
 - An **`Activity`** is just an `id` and a `duration` in minutes, e.g. `{"id": "sail", "duration": 120}`.
-- A **`Constraint`** is one of four typed variants, picked by its `type` field (Pydantic calls
+- A **`Constraint`** is one of five typed variants, picked by its `type` field (Pydantic calls
   this a *discriminated union* — it reads `type` to know which shape to expect):
   - `time_window` — an `earliest` start and/or `latest_end` for one activity.
   - `no_overlap` — a set of activities (or `"all"`) that can't run at the same time.
   - `precedence` — one activity must finish before another starts.
+  - `sequence` — an ordered list of activities where each one finishes before the next starts. It's
+    just `precedence` generalized to a whole chain: N activities expand to N−1 adjacent precedences,
+    so "first A, then B, finally C" is one rule instead of several pairwise ones.
   - `conditional` — a `when` / `then` rule, e.g. *when* kiteboard is absent, *then* set sail's
     duration ×2.
 
 Every constraint also carries `enabled` (a toggle so you can switch a rule off without deleting
 its numbers), `label` (a human title), and `source` (the phrase it came from). Each constraint
 `type` maps almost 1:1 to a CP-SAT call in `solver.py`.
+
+The Scenario also has an optional **`day`** window — a `DayWindow` with a `start` and `end`
+(both `"HH:MM"`), e.g. `{"start": "08:00", "end": "22:00"}`. Unlike a `time_window` (which limits
+one activity), the day window bounds **every** activity to that span and anchors the schedule to
+the day's start, so it packs from there. Omit `day` entirely and activities are free across the
+full 0–24h day.
 
 ### How it flows
 
@@ -202,6 +211,11 @@ model.add(ends["drive_to_lake"] <= starts["sail"])
 
 "The drive ends no later than sailing begins." Combined with `no_overlap`, the solver now knows
 the drive must fully precede the sail.
+
+A `sequence` constraint is just this same inequality applied down a whole chain: for ordered
+`activities` it emits one `ends[a] <= starts[b]` per adjacent pair, so an N-step routine becomes
+N−1 of these. Nothing new for the solver — it's a convenience for ordering phrasing like
+"first coffee, then shower, then commute."
 
 ### time_window: earliest starts and deadlines
 

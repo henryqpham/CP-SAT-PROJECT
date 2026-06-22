@@ -159,6 +159,7 @@ select:focus {
 .badge-precedence { background: #dcfce7; color: #15803d; }
 .badge-no_overlap { background: #f1f5f9; color: #475569; }
 .badge-conditional { background: #fae8ff; color: #a21caf; }
+.badge-sequence { background: #fef3c7; color: #b45309; }
 
 .field { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.4rem; font-size: 0.9rem; }
 .field-lbl { color: var(--muted); flex: 0 0 8rem; }
@@ -170,6 +171,27 @@ select:focus {
   border-radius: 6px;
 }
 .field input[type="number"] { width: 6rem; }
+.checklist { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; }
+.sequence { display: flex; flex-direction: column; gap: 0.3rem; align-items: flex-start; }
+.seq-step { display: flex; align-items: center; gap: 0.35rem; }
+.seq-step .field { margin-top: 0; }
+.seq-step .field-lbl { display: none; }
+.seq-num { color: var(--muted); flex: 0 0 1.4rem; text-align: right; font-variant-numeric: tabular-nums; }
+.seq-move {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  font-size: 0.75rem;
+}
+.seq-move:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.seq-move:disabled { opacity: 0.35; cursor: default; }
+.seq-add { margin-top: 0.15rem; }
+.check { display: flex; align-items: center; gap: 0.3rem; color: var(--ink); }
+.check input { width: auto; }
 .hint { color: var(--muted); font-size: 0.85rem; margin-top: 0.4rem; font-style: italic; }
 .card small {
   display: block;
