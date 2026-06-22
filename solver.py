@@ -1,26 +1,11 @@
-# YOU write this — it's the CP-SAT you're here to learn.
-#
-# Input:  a validated models.Scenario.
-# Output: a dict the dashboard renders. Use this shape so static/app.js works:
-#   {"status": "OPTIMAL", "schedule": [{"id": "sail", "start": 600, "end": 720}, ...]}
-#   {"status": "INFEASIBLE", "conflict": ["c1", "c2"]}   # optional: which rules clashed
-#   (start/end are minutes from midnight; 600 = 10:00.)
-#
-# Translate each constraint by its "type" (skip any where enabled is false):
-#   time_window  -> model.add(start >= earliest);  model.add(end <= latest_end)
-#   no_overlap   -> model.add_no_overlap([intervals])
-#   precedence   -> model.add(end_before <= start_after)
-#   conditional  -> a BoolVar + model.add(...).only_enforce_if(...)
-#
-# CP-SAT toolbox: CpModel, new_int_var, new_fixed_size_interval_var, add_no_overlap,
-# only_enforce_if, add_max_equality, minimize, CpSolver().solve(model).
+"""Turn a validated models.Scenario into a CP-SAT model and solve it."""
 
 from ortools.sat.python import cp_model
 
 from models import Scenario
 
 # Single-day horizon: every time is minutes from midnight, 0..1440 (24h).
-DAY = 24 * 60  # 1440
+DAY = 24 * 60
 
 
 def _to_minutes(hhmm: str) -> int:
@@ -32,22 +17,131 @@ def _to_minutes(hhmm: str) -> int:
 def solve(scenario: Scenario) -> dict:
     model = cp_model.CpModel()
 
-    # One start var + one fixed-size interval per activity, keyed by id.
-    # Bounding start to [0, DAY - duration] keeps each activity inside the day
-    # (end <= 1440). That day-horizon cap is what makes the smoke test infeasible.
-    starts = {}
-    durations = {}
-    intervals = {}
-    for a in scenario.activities:
-        starts[a.id] = model.new_int_var(0, DAY - a.duration, a.id)
-        durations[a.id] = a.duration
-        intervals[a.id] = model.new_fixed_size_interval_var(
-            starts[a.id], a.duration, f"iv_{a.id}"
-        )
+    base_duration = {a.id: a.duration for a in scenario.activities}
 
-    # Each activity's end is just the expression start + duration.
-    def end(activity_id):
-        return starts[activity_id] + durations[activity_id]
+    # Scan conditionals once to learn the model shape:
+    #   - which activity is OPTIONAL (a conditional's when.activity), and
+    #   - which activity has a CONDITIONAL DURATION (then.set_duration), keyed
+    #     on the optional activity's presence.
+    optional_ids = set()
+    # duration_rules[activity_id] = (presence_literal_owner_id, factor)
+    duration_rules = {}
+    for c in scenario.constraints:
+        if not c.enabled or c.type != "conditional":
+            continue
+        when = c.when or {}
+        when_activity = when.get("activity")
+        if when_activity in base_duration:
+            optional_ids.add(when_activity)
+        set_dur = (c.then or {}).get("set_duration") or {}
+        target = set_dur.get("activity")
+        factor = set_dur.get("factor", 1)
+        # Ignore malformed/nonsensical rules rather than failing opaquely: a
+        # negative or non-numeric factor would build a negative interval size,
+        # and a self-referential rule ("if X is absent, change X's duration")
+        # would silently drop X. Skipping leaves the activity at base duration.
+        valid_factor = isinstance(factor, (int, float)) and factor >= 0
+        if (
+            target in base_duration
+            and when_activity in base_duration
+            and target != when_activity
+            and valid_factor
+        ):
+            # Honor the present flag: factor applies in the branch named by it.
+            duration_rules[target] = {
+                "trigger": when_activity,
+                "factor": factor,
+                "apply_when_present": bool(when.get("present", False)),
+            }
+
+    starts = {}
+    ends = {}
+    intervals = {}
+    presence = {}  # activity_id -> presence BoolVar (only for optional activities)
+
+    for a in scenario.activities:
+        aid = a.id
+        # Each activity lives somewhere in the single-day horizon. Its own
+        # time_window (if any) tightens this below; per-activity windows must
+        # NOT leak onto other activities, so there is no shared "day" bound.
+        starts[aid] = model.new_int_var(0, DAY, f"start_{aid}")
+        ends[aid] = model.new_int_var(0, DAY, f"end_{aid}")
+
+        is_optional = aid in optional_ids
+        rule = duration_rules.get(aid)
+
+        if rule is not None:
+            # Variable-size interval: size depends on the trigger's presence.
+            base = base_duration[aid]
+            scaled = int(base * rule["factor"])  # int() keeps a float factor's bound integral
+            lo, hi = sorted((base, scaled))
+            size = model.new_int_var(lo, hi, f"size_{aid}")
+
+            trigger_present = presence.get(rule["trigger"])
+            if trigger_present is None:
+                # Trigger's presence var may not exist yet; create it now so we
+                # can reference it. (Activities are added in order, but the rule
+                # may point forward.)
+                trigger_present = model.new_bool_var(f"present_{rule['trigger']}")
+                presence[rule["trigger"]] = trigger_present
+
+            if rule["apply_when_present"]:
+                model.add(size == scaled).only_enforce_if(trigger_present)
+                model.add(size == base).only_enforce_if(trigger_present.Not())
+            else:
+                model.add(size == scaled).only_enforce_if(trigger_present.Not())
+                model.add(size == base).only_enforce_if(trigger_present)
+
+            interval = model.new_interval_var(
+                starts[aid], size, ends[aid], f"iv_{aid}"
+            )
+        elif is_optional:
+            present = presence.get(aid)
+            if present is None:
+                present = model.new_bool_var(f"present_{aid}")
+                presence[aid] = present
+            interval = model.new_optional_interval_var(
+                starts[aid], base_duration[aid], ends[aid], present, f"iv_{aid}"
+            )
+        else:
+            interval = model.new_interval_var(
+                starts[aid], base_duration[aid], ends[aid], f"iv_{aid}"
+            )
+
+        intervals[aid] = interval
+
+    # Objective (lexicographic): first schedule as many optional activities as
+    # possible (a fuller day is the better demo), then make the schedule compact
+    # so activities cluster together instead of drifting into the empty hours.
+    # We minimize the span (latest end - earliest start) over the *present*
+    # activities; absent optionals are neutralized so they don't widen the span.
+    eff_starts, eff_ends = [], []
+    for aid in starts:
+        p = presence.get(aid)
+        if p is None:
+            eff_starts.append(starts[aid])
+            eff_ends.append(ends[aid])
+        else:  # optional: ignore when absent (start->DAY, end->0 widen nothing)
+            es = model.new_int_var(0, DAY, f"effstart_{aid}")
+            ee = model.new_int_var(0, DAY, f"effend_{aid}")
+            model.add(es == starts[aid]).only_enforce_if(p)
+            model.add(es == DAY).only_enforce_if(p.Not())
+            model.add(ee == ends[aid]).only_enforce_if(p)
+            model.add(ee == 0).only_enforce_if(p.Not())
+            eff_starts.append(es)
+            eff_ends.append(ee)
+
+    if eff_starts:
+        min_start = model.new_int_var(0, DAY, "min_start")
+        max_end = model.new_int_var(0, DAY, "max_end")
+        model.add_min_equality(min_start, eff_starts)
+        model.add_max_equality(max_end, eff_ends)
+        span = max_end - min_start
+        if presence:
+            # Presence dominates: one more activity beats any span saving.
+            model.maximize((DAY + 1) * sum(presence.values()) - span)
+        else:
+            model.minimize(span)
 
     for c in scenario.constraints:
         if not c.enabled:
@@ -59,7 +153,7 @@ def solve(scenario: Scenario) -> dict:
             if c.earliest is not None:
                 model.add(starts[c.activity] >= _to_minutes(c.earliest))
             if c.latest_end is not None:
-                model.add(end(c.activity) <= _to_minutes(c.latest_end))
+                model.add(ends[c.activity] <= _to_minutes(c.latest_end))
 
         elif c.type == "no_overlap":
             if c.activities == "all":
@@ -70,23 +164,33 @@ def solve(scenario: Scenario) -> dict:
                 model.add_no_overlap(ivs)
 
         elif c.type == "precedence":
-            if c.before in starts and c.after in starts:
-                model.add(end(c.before) <= starts[c.after])
+            if c.before in ends and c.after in starts:
+                model.add(ends[c.before] <= starts[c.after])
 
-        # conditional (Sprint 2) and any unknown type: no-op so it can't crash.
+        # conditional: handled above when building the activity vars.
 
     solver = cp_model.CpSolver()
     status = solver.solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        schedule = [
-            {
-                "id": a.id,
-                "start": solver.value(starts[a.id]),
-                "end": solver.value(starts[a.id]) + a.duration,
-            }
-            for a in scenario.activities
-        ]
+        schedule = []
+        for a in scenario.activities:
+            aid = a.id
+            # Skip optional activities the solver chose to drop; their
+            # start/end values are meaningless when absent.
+            present_var = presence.get(aid)
+            if present_var is not None and not solver.boolean_value(present_var):
+                continue
+            schedule.append(
+                {
+                    "id": aid,
+                    "start": solver.value(starts[aid]),
+                    "end": solver.value(ends[aid]),
+                }
+            )
         return {"status": "OPTIMAL", "schedule": schedule}
 
-    return {"status": "INFEASIBLE"}
+    if status == cp_model.INFEASIBLE:
+        return {"status": "INFEASIBLE"}
+
+    return {"status": "UNKNOWN"}

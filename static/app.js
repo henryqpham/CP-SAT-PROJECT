@@ -14,6 +14,13 @@ $("solve-btn").onclick = async () => {
   renderResult(await post("/solve", scenario));
 };
 
+$("example-btn").onclick = async () => {
+  // Load the hand-written demo IR so the dashboard works without an API key.
+  const r = await fetch("/example");
+  scenario = await r.json();
+  render();
+};
+
 async function post(url, body) {
   const r = await fetch(url, {
     method: "POST",
@@ -29,12 +36,10 @@ function render() {
   const box = $("constraints");
   box.innerHTML = "";
 
-  // Activities: editable durations.
   for (const a of scenario.activities) {
     box.append(card(a.id, [numField("duration (min)", a.duration, (v) => (a.duration = v))], true));
   }
 
-  // Constraints: enabled toggle + key editable fields.
   for (const c of scenario.constraints) {
     const fields = [];
     if (c.earliest != null) fields.push(textField("earliest", c.earliest, (v) => (c.earliest = v)));

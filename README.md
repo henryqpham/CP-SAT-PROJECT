@@ -5,6 +5,8 @@ watch it become editable constraint blocks, and let **CP-SAT** (Google OR-Tools)
 schedule that fits — or prove none exists. One local Flask app, Python only. Learning /
 portfolio project.
 
+New to constraint solving? See [ARCHITECTURE.md](ARCHITECTURE.md) for a gentle, plain-language tour of the app and how CP-SAT works.
+
 > _"Go to Lake Michigan, leave after 8 AM, grab a hamburger, sail, maybe kiteboard — and if I
 > can't kiteboard, sail twice as long — be home by 10 PM."_ → a solved, editable timetable.
 
@@ -16,8 +18,9 @@ source of truth and you approve it. That review step is the reliability move: an
 a clean-looking schedule while silently dropping a rule, so we validate the **constraints**,
 not just the result. Every constraint carries the `source` phrase it came from.
 
-One Flask app serves the dashboard plus two JSON endpoints — `/parse` (sentence → JSON via
-Claude) and `/solve` (JSON → schedule via CP-SAT). No build step, no npm, no database.
+One Flask app serves the dashboard plus three JSON endpoints — `/parse` (sentence → JSON via
+Claude), `/solve` (JSON → schedule via CP-SAT), and `/example` (the hand-written demo IR, so
+the dashboard is usable without an API key). No build step, no npm, no database.
 
 ```mermaid
 flowchart LR
@@ -27,6 +30,7 @@ flowchart LR
         direction TB
         PARSE["/parse"]
         SOLVE["/solve<br/>CP-SAT"]
+        EXAMPLE["/example<br/>demo IR"]
         MODELS["models.py<br/>Pydantic IR"]
     end
 
@@ -36,6 +40,8 @@ flowchart LR
     PARSE --> CLAUDE
     CLAUDE -->|constraints JSON| PARSE
     PARSE -->|editable IR| FE
+    FE -->|"Load example"| EXAMPLE
+    EXAMPLE -->|editable IR| FE
     FE -->|edited IR| SOLVE
     SOLVE -->|schedule| FE
     MODELS -.validates.-> PARSE
@@ -48,10 +54,10 @@ Data flow: **sentence → (Claude) → editable JSON → (you tweak) → CP-SAT 
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /parse (Claude), /solve (CP-SAT)
+├── app.py               # Flask: / (dashboard), /parse (Claude), /solve (CP-SAT), /example (demo IR)
 ├── models.py            # Pydantic IR: Activity + constraint union — the JSON contract
 ├── parse.py             # Claude: sentence -> validated Scenario
-├── solver.py            # ← YOU write: Scenario -> CP-SAT -> schedule
+├── solver.py            # Scenario -> CP-SAT -> schedule
 ├── examples/lake.json   # hand-written IR to test /solve without the LLM
 ├── templates/index.html
 ├── static/app.js        # fetch /parse + /solve, render cards + Gantt
@@ -60,10 +66,9 @@ CP-SAT-PROJECT/
 └── .env.example         # ANTHROPIC_API_KEY=
 ```
 
-**What you write vs. plumbing**
-- **Yours (the CP-SAT you're here to learn):** `solver.py` — translate each constraint into a
-  CP-SAT call (`add_no_overlap`, `only_enforce_if`, time-window bounds…).
-- **Plumbing (already scaffolded):** `models.py`, `parse.py`, `app.py`, `templates/`, `static/`.
+`solver.py` is the CP-SAT core — it translates each constraint into a CP-SAT call
+(`add_no_overlap`, `only_enforce_if`, time-window bounds…); the rest (`models.py`, `parse.py`,
+`app.py`, `templates/`, `static/`) is the surrounding plumbing.
 
 ## The intermediate format (IR)
 
@@ -99,5 +104,5 @@ The dashboard and `/solve` work without an API key; only `/parse` needs Claude.
 ## Notes
 
 - Local-only portfolio/demo — no database, no auth, no hosting.
-- Build order that never blocks you: `models.py` → `solver.py` (test with `examples/lake.json`)
-  → dashboard → `/parse` (Claude) last. The app works end-to-end before the LLM exists.
+- The dashboard and `/solve` run without an API key (test with `examples/lake.json`); only
+  `/parse` calls Claude.
