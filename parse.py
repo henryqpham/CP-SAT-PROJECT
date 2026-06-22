@@ -12,9 +12,14 @@ MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 
 SYSTEM = """You convert a plain-English description of a day into a scheduling IR.
 
-Output ONLY a JSON object: {"activities": [...], "constraints": [...]}.
+Output ONLY a JSON object: {"activities": [...], "constraints": [...], optional "day": {...}}.
 
 activities: [{"id": "<snake_case>", "duration": <minutes>}]
+
+day (OPTIONAL): {"start": "HH:MM", "end": "HH:MM"} — ONLY when the sentence states the
+WHOLE day's bounds ("my day runs 8am to 10pm", "I'm free 9 to 5"). It bounds EVERY
+activity. Omit it entirely if no overall span is given. A lone "after 8 AM" or "home by
+10 PM" is a time_window on ONE activity, not a day window.
 
 constraints: each has "id", "type", "enabled" (true), "label", and "source"
 (the exact phrase it came from). One of:
@@ -38,8 +43,8 @@ Rules:
 - Give every constraint the exact source phrase so a human can review it.
 
 Example —
-Sentence: "Go to the lake, leave after 8 AM, grab a hamburger, sail, maybe kiteboard, and if I can't kiteboard sail twice as long, be home by 10 PM."
-JSON: {"activities":[{"id":"drive_to_lake","duration":90},{"id":"hamburger","duration":30},{"id":"sail","duration":120},{"id":"kiteboard","duration":120},{"id":"drive_home","duration":90}],"constraints":[{"id":"c1","type":"time_window","activity":"drive_to_lake","earliest":"08:00","enabled":true,"label":"Leave after 8 AM","source":"leave after 8 AM"},{"id":"c2","type":"time_window","activity":"drive_home","latest_end":"22:00","enabled":true,"label":"Home by 10 PM","source":"be home by 10 PM"},{"id":"c3","type":"no_overlap","activities":"all","enabled":true,"label":"One thing at a time","source":""},{"id":"c4","type":"precedence","before":"drive_to_lake","after":"sail","enabled":true,"label":"Drive before sailing","source":""},{"id":"c5","type":"conditional","when":{"activity":"kiteboard","present":false},"then":{"set_duration":{"activity":"sail","factor":2}},"enabled":true,"label":"If no kite, sail twice as long","source":"if I can't kiteboard, sail twice as long"}]}
+Sentence: "My day runs 8 AM to 10 PM. Go to the lake, leave after 8 AM, grab a hamburger, sail, maybe kiteboard, and if I can't kiteboard sail twice as long, be home by 10 PM."
+JSON: {"day":{"start":"08:00","end":"22:00"},"activities":[{"id":"drive_to_lake","duration":90},{"id":"hamburger","duration":30},{"id":"sail","duration":120},{"id":"kiteboard","duration":120},{"id":"drive_home","duration":90}],"constraints":[{"id":"c1","type":"time_window","activity":"drive_to_lake","earliest":"08:00","enabled":true,"label":"Leave after 8 AM","source":"leave after 8 AM"},{"id":"c2","type":"time_window","activity":"drive_home","latest_end":"22:00","enabled":true,"label":"Home by 10 PM","source":"be home by 10 PM"},{"id":"c3","type":"no_overlap","activities":"all","enabled":true,"label":"One thing at a time","source":""},{"id":"c4","type":"precedence","before":"drive_to_lake","after":"sail","enabled":true,"label":"Drive before sailing","source":""},{"id":"c5","type":"conditional","when":{"activity":"kiteboard","present":false},"then":{"set_duration":{"activity":"sail","factor":2}},"enabled":true,"label":"If no kite, sail twice as long","source":"if I can't kiteboard, sail twice as long"}]}
 """
 
 

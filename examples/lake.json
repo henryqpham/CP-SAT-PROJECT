@@ -1,4 +1,5 @@
 {
+  "day": { "start": "08:00", "end": "22:00" },
   "activities": [
     { "id": "drive_to_lake", "duration": 90 },
     { "id": "hamburger", "duration": 30 },

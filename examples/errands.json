@@ -1,4 +1,5 @@
 {
+  "day": { "start": "08:00", "end": "14:00" },
   "activities": [
     { "id": "leave_home", "duration": 15 },
     { "id": "gas", "duration": 10 },

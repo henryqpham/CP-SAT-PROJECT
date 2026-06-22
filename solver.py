@@ -19,6 +19,14 @@ def solve(scenario: Scenario) -> dict:
 
     base_duration = {a.id: a.duration for a in scenario.activities}
 
+    # Optional whole-day window: bounds EVERY activity and anchors the schedule
+    # to the start of the day (so "my day runs 8 AM to 10 PM" actually holds).
+    day_start, day_end, day_set = 0, DAY, False
+    if scenario.day is not None:
+        ds, de = _to_minutes(scenario.day.start), _to_minutes(scenario.day.end)
+        if 0 <= ds < de <= DAY:
+            day_start, day_end, day_set = ds, de, True
+
     # Scan conditionals once to learn the model shape:
     #   - which activity is OPTIONAL (a conditional's when.activity), and
     #   - which activity has a CONDITIONAL DURATION (then.set_duration), keyed
@@ -61,11 +69,10 @@ def solve(scenario: Scenario) -> dict:
 
     for a in scenario.activities:
         aid = a.id
-        # Each activity lives somewhere in the single-day horizon. Its own
-        # time_window (if any) tightens this below; per-activity windows must
-        # NOT leak onto other activities, so there is no shared "day" bound.
-        starts[aid] = model.new_int_var(0, DAY, f"start_{aid}")
-        ends[aid] = model.new_int_var(0, DAY, f"end_{aid}")
+        # Each activity lives within the day window (full 0..DAY if none set).
+        # A per-activity time_window (below) can only tighten this further.
+        starts[aid] = model.new_int_var(day_start, day_end, f"start_{aid}")
+        ends[aid] = model.new_int_var(day_start, day_end, f"end_{aid}")
 
         is_optional = aid in optional_ids
         rule = duration_rules.get(aid)
@@ -111,17 +118,16 @@ def solve(scenario: Scenario) -> dict:
         intervals[aid] = interval
 
     # Objective (lexicographic): first schedule as many optional activities as
-    # possible (a fuller day is the better demo), then make the schedule compact
-    # so activities cluster together instead of drifting into the empty hours.
-    # We minimize the span (latest end - earliest start) over the *present*
-    # activities; absent optionals are neutralized so they don't widen the span.
+    # possible (a fuller day is the better demo), then tidy the layout. We work
+    # over the *present* activities; absent optionals are neutralized so they
+    # don't count (start->DAY, end->0 raise/widen nothing).
     eff_starts, eff_ends = [], []
     for aid in starts:
         p = presence.get(aid)
         if p is None:
             eff_starts.append(starts[aid])
             eff_ends.append(ends[aid])
-        else:  # optional: ignore when absent (start->DAY, end->0 widen nothing)
+        else:
             es = model.new_int_var(0, DAY, f"effstart_{aid}")
             ee = model.new_int_var(0, DAY, f"effend_{aid}")
             model.add(es == starts[aid]).only_enforce_if(p)
@@ -136,12 +142,16 @@ def solve(scenario: Scenario) -> dict:
         max_end = model.new_int_var(0, DAY, "max_end")
         model.add_min_equality(min_start, eff_starts)
         model.add_max_equality(max_end, eff_ends)
-        span = max_end - min_start
+        # With a day window, minimize the finish time so the schedule packs from
+        # the start of the day. Without one, minimize only the span (width): the
+        # block stays compact but its position floats (minimizing the finish with
+        # no day floor would just drift activities into the empty pre-dawn hours).
+        tidy = max_end if day_set else (max_end - min_start)
         if presence:
-            # Presence dominates: one more activity beats any span saving.
-            model.maximize((DAY + 1) * sum(presence.values()) - span)
+            # Presence dominates: one more activity beats any layout saving.
+            model.maximize((DAY + 1) * sum(presence.values()) - tidy)
         else:
-            model.minimize(span)
+            model.minimize(tidy)
 
     for c in scenario.constraints:
         if not c.enabled:

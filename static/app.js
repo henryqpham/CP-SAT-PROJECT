@@ -176,8 +176,34 @@ function newConstraint(type) {
 // ---- rendering ----------------------------------------------------------
 function render() {
   $("board").hidden = false;
+  renderDay();
   renderActivities();
   renderConstraints();
+}
+
+function renderDay() {
+  const box = $("day");
+  box.innerHTML = "";
+  const el = cardShell("constraint");
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!scenario.day;
+  cb.setAttribute("aria-label", "limit the whole day to a window");
+  cb.onchange = () => {
+    scenario.day = cb.checked ? { start: "08:00", end: "22:00" } : null;
+    render();
+  };
+  head.append(cb);
+  head.append(el_("strong", "Bound the whole day to a window", "card-title"));
+  el.append(head);
+  if (scenario.day) {
+    el.append(textField("start (HH:MM)", scenario.day.start, (v) => (scenario.day.start = v)));
+    el.append(textField("end (HH:MM)", scenario.day.end, (v) => (scenario.day.end = v)));
+    el.append(el_("div", "Every activity must fit inside this window, and the day starts here.", "hint"));
+  }
+  box.append(el);
 }
 
 function renderActivities() {

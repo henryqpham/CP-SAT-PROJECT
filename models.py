@@ -49,6 +49,14 @@ Constraint = Annotated[
 ]
 
 
+class DayWindow(BaseModel):
+    # The whole day's bounds. Unlike a single time_window (which limits one
+    # activity), this bounds EVERY activity — "my day runs 8 AM to 10 PM".
+    start: str = "00:00"  # "HH:MM"
+    end: str = "24:00"    # "HH:MM"
+
+
 class Scenario(BaseModel):
     activities: list[Activity]
     constraints: list[Constraint]
+    day: Optional[DayWindow] = None
