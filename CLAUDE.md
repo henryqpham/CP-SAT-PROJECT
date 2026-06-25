@@ -30,7 +30,11 @@ shows the result. One local Flask app, Python only. See README.md for the archit
   rules can't resolve; merge + method-tagged coverage report
 - `bench_extract.py` — before/after extraction benchmark + regression harness for the doc pipeline
 - `solver.py` — turns a `Scenario` into a CP-SAT model (single-day OR multi-day) and solves it; `explain_infeasibility` names conflicts
-- `templates/index.html`, `static/app.js`, `static/style.css` — the vanilla-JS dashboard (editable cards + multi-day Gantt)
+- `templates/index.html`, `static/*.js`, `static/style.css` — the vanilla-JS dashboard (framework-free,
+  no build step). JS is split into classic `<script>` modules loaded in order: `core.js` (shared
+  state/helpers + `render()`), `editor.js` (editable cards + Moment/sequence editors), `gantt.js`
+  (single + multi-day timeline), `coverage.js` (the coverage/trust panel), `upload.js` (.docx import),
+  `main.js` (wiring, loaded last). One hand-written `style.css` (design tokens + per-area sections).
 - `examples/lake.json` (single-day demo), `examples/project.json` (multi-day demo)
 - `smoke.py` — the runnable green-gate harness + `verify_schedule` (asserts every constraint holds)
 - `testdata/make_sample_docx.py` — generates a ~15-page synthetic requirements `.docx` for testing ingestion

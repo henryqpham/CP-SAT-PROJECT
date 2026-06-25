@@ -59,7 +59,7 @@ endpoints.
 | `extract_det.py` | The deterministic backbone: pure functions over the blocks that read durations, resources, dependencies, and dated milestones by rule (with provenance and a method tag), no LLM. |
 | `extract.py` | The orchestrator: runs the deterministic passes first, calls the local model ONLY for the residual rules can't resolve, merges into one multi-day `Scenario`, and emits a coverage report that records how each item was resolved. |
 | `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model (single-day OR multi-day) and solves it; `explain_infeasibility` names conflicts. |
-| `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable cards + a zoomable multi-day Gantt + the coverage panel. |
+| `templates/index.html`, `static/*.js`, `static/style.css` | The vanilla-JS dashboard — framework-free, no build step. Split into classic `<script>` modules: `core.js` (shared state/helpers + `render()`), `editor.js` (editable cards + Moment/sequence editors), `gantt.js` (single-day chart + multi-day timeline), `coverage.js` (the trust panel), `upload.js` (.docx import flow), `main.js` (wiring). One hand-written `style.css`. |
 | `examples/lake.json`, `examples/project.json` | Hand-written IRs (single-day, multi-day) so you can exercise `/solve` without the LLM. |
 | `smoke.py` | The runnable green-gate tests + `verify_schedule`. |
 

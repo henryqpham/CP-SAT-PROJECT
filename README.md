@@ -85,8 +85,14 @@ CP-SAT-PROJECT/
 ├── examples/project.json # hand-written multi-day IR (10-day project: resources, a deadline, a conditional)
 ├── testdata/make_sample_docx.py  # generates a ~15-page synthetic requirements .docx for testing ingestion
 ├── templates/index.html
-├── static/app.js        # fetch the routes; render editable cards + a zoomable multi-day Gantt + coverage panel
-├── static/style.css
+├── static/             # vanilla-JS dashboard — framework-free, no build step, classic <script> modules
+│   ├── core.js         #   shared: state, network, render() dispatcher, DOM helpers
+│   ├── editor.js       #   editable activity/constraint cards + Moment & sequence editors
+│   ├── gantt.js        #   single-day chart + zoomable, section-grouped multi-day timeline
+│   ├── coverage.js     #   the coverage / trust panel (method tags, edges, audit)
+│   ├── upload.js       #   .docx drag-drop + SSE-streamed extraction state machine
+│   ├── main.js         #   wires the modules together (loaded last)
+│   └── style.css       #   one hand-written CSS file (design tokens + per-area sections)
 ├── requirements.txt
 └── .env.example         # OLLAMA_MODEL= (optional local-model override)
 ```
@@ -166,6 +172,48 @@ To try the document path: generate the sample spec with `python testdata/make_sa
 in the dashboard upload `testdata/sample_vehicle_requirements.docx` → review the coverage report →
 **Solve**. To see the deterministic-first speedup, run `python bench_extract.py` (before/after
 extraction benchmark + regression harness). Multi-day solver knobs (env): `SOLVER_BUCKET_MINUTES` (default 15), `SOLVER_TIME_LIMIT_SECONDS` (10), `SOLVER_WORKERS` (8).
+
+## Demo (2 minutes)
+
+The throughline: **the LLM is supervised, not trusted.** It only *drafts* rules — you review them,
+CP-SAT does the math, and a coverage report proves nothing was dropped. The demo has a fast hook
+(a sentence) and a payoff (a 15-page document whose extraction you can audit). Everything below
+works with **Ollama stopped** except typing a brand-new sentence. If
+`testdata/sample_vehicle_requirements.docx` is missing, run `python testdata/make_sample_docx.py`.
+
+**Part 1 — the hook: a sentence → a solved day (~30s)**
+
+1. Either **type** the sentence and click **Parse →** (needs Ollama):
+   *"Go to the lake, leave after 8 AM, sail, maybe kiteboard — and if I can't kiteboard, sail twice
+   as long — be home by 10 PM."* …or pick **"Lake day"** from *Load an example* (no model needed).
+2. Point at the editable cards: each rule shows its **type badge**, an **enable/disable** toggle,
+   and the **source phrase** it came from. *"This review step is the whole point — an LLM can hand
+   you a clean-looking schedule that silently dropped a rule."*
+3. Click **Solve** → a single-day Gantt, **OPTIMAL**. Tighten one window (set the drive's *earliest*
+   to `21:00`) and **Solve** again → **INFEASIBLE**, with the clashing time-window cards outlined.
+
+**Part 2 — the payoff: a 15-page spec → an audited multi-day plan (~90s)**
+
+4. Drag `testdata/sample_vehicle_requirements.docx` into the import area (or click to browse).
+   Deterministic-first extraction returns in well under a second — the step chips flash
+   *Scan → Extract → Review*.
+5. **Stop on the Coverage panel — the centerpiece.** Walk it: the hero reads **29 / 29
+   requirements · 0 dropped** with a **"Fully deterministic — 0 model calls"** badge; the **method
+   breakdown** bars split durations/resources into **deterministic / llm / default** (all read by
+   rules here); **28 dependency edges**, all deterministic; and the **cross-reference audit** —
+   references the rules deliberately did *not* turn into edges, *surfaced for human review, never
+   auto-added*.
+6. Scroll the editor — every activity carries its **`source`** phrase from the doc; spot-check one.
+7. Click **Solve** → **INFEASIBLE**. The explainer names exactly one rule, **"VR-512 after
+   VR-512"** (a planted self-dependency), and red-outlines that card. *"Across 30 requirements it
+   tells you which rule is impossible, not just that something is."*
+8. Untick that card's **enable** toggle and **Solve** again → **OPTIMAL**: all **29 tasks** across
+   a multi-week timeline. **Zoom**, **scroll** the weeks (day + heavier week gridlines with calendar
+   dates), **collapse a section**, and **hover a bar** for its label / section / source / span.
+
+**Close:** *two ways in — a sentence or a 15-page spec — both land in the same editable, typed JSON
+you approve before solving. The reliability move isn't a better model; it's making every rule
+visible, sourced, and provably accounted for. All local — nothing leaves the machine.*
 
 ## Notes
 

@@ -9,8 +9,13 @@
   <body>
     <main>
       <header class="app-head">
-        <h1>Schedule Optimizer</h1>
+        <h1><span class="brand-mark">⌖</span> Schedule Optimizer</h1>
         <p class="tagline">Describe your day in plain English — get a solved, editable timetable.</p>
+        <p class="thesis">
+          The LLM is <strong>supervised, not trusted</strong>: it only drafts the rules. Every
+          constraint stays editable with its source phrase, CP-SAT does the math, and a coverage
+          report proves nothing was dropped.
+        </p>
       </header>
 
       <div id="alert" class="alert" role="alert" hidden></div>
@@ -118,6 +123,13 @@
       </section>
     </main>
 
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <!-- Framework-free, no build step: classic <script> modules loaded in order.
+         core.js first (shared state + helpers), main.js last (wires everything). -->
+    <script src="{{ url_for('static', filename='core.js') }}"></script>
+    <script src="{{ url_for('static', filename='editor.js') }}"></script>
+    <script src="{{ url_for('static', filename='gantt.js') }}"></script>
+    <script src="{{ url_for('static', filename='coverage.js') }}"></script>
+    <script src="{{ url_for('static', filename='upload.js') }}"></script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
   </body>
 </html>
