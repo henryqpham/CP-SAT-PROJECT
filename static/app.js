@@ -1,5 +1,10 @@
-// Dashboard: sentence -> /parse (or Load example) -> editable cards -> /solve -> 24h timeline.
+// Dashboard: sentence -> /parse (or Load example) -> editable cards -> /solve -> timeline.
+// Multi-day: import a .docx (/upload + /extract), scroll/zoom a multi-day Gantt grouped by section.
 let scenario = { activities: [], constraints: [] };
+
+// Last /upload response (its `blocks` feed /extract) and last solve result (for re-render on zoom).
+let uploadBlocks = null;
+let lastResult = null;
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
@@ -41,6 +46,28 @@ $("solve-btn").onclick = () =>
     renderResult(await post("/solve", scenario));
   });
 
+// --- .docx import: /upload (fast scan) then /extract (slow, streamed) ---
+$("upload-btn").onclick = () =>
+  withBusy($("upload-btn"), "Reading…", async () => {
+    const file = $("docx-file").files[0];
+    if (!file) {
+      showAlert("Choose a .docx file first.");
+      return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    let r;
+    try {
+      r = await fetch("/upload", { method: "POST", body: form });
+    } catch {
+      throw new Error("Could not reach the server — is the Flask app running?");
+    }
+    const data = await safeJSON(r);
+    if (!r.ok) throw new Error((data && (data.message || data.error)) || `Upload failed (${r.status}).`);
+    uploadBlocks = data.blocks || null;
+    renderUploadSummary(data.coverage || {});
+  });
+
 $("add-activity").onclick = () => {
   scenario.activities.push({ id: uniqueActivityId(), duration: 30 });
   render();
@@ -55,6 +82,19 @@ $("add-constraint").onclick = () => {
 $("sentence").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("parse-btn").click();
 });
+
+// Zoom controls (multi-day Gantt only): slider drives px/min; buttons nudge it.
+$("zoom").addEventListener("input", (e) => {
+  zoomT = Number(e.target.value) / 100;
+  redrawGantt();
+});
+$("zoom-in").onclick = () => nudgeZoom(+0.12);
+$("zoom-out").onclick = () => nudgeZoom(-0.12);
+function nudgeZoom(delta) {
+  zoomT = Math.min(1, Math.max(0, zoomT + delta));
+  $("zoom").value = String(Math.round(zoomT * 100));
+  redrawGantt();
+}
 
 // ---- network ------------------------------------------------------------
 async function getJSON(url) {
@@ -188,9 +228,49 @@ function newConstraint(type) {
 // ---- rendering ----------------------------------------------------------
 function render() {
   $("board").hidden = false;
+  renderProject();
   renderDay();
   renderActivities();
   renderConstraints();
+}
+
+// Project (multi-day) card: start_date (display only) + horizon_days. Setting
+// horizon_days is what makes a scenario "multi-day"; clearing it returns to single-day.
+function renderProject() {
+  const box = $("project");
+  box.innerHTML = "";
+  const el = cardShell("constraint");
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = scenario.horizon_days != null;
+  cb.setAttribute("aria-label", "schedule across multiple days");
+  cb.onchange = () => {
+    scenario.horizon_days = cb.checked ? (scenario.horizon_days || 7) : null;
+    if (!cb.checked) scenario.start_date = scenario.start_date || null;
+    render();
+  };
+  head.append(cb);
+  head.append(el_("strong", "Schedule across multiple days", "card-title"));
+  el.append(head);
+
+  if (scenario.horizon_days != null) {
+    el.append(numField("horizon (days)", scenario.horizon_days, (v) => {
+      // 1..365; an empty/invalid entry falls back to a 1-day horizon.
+      scenario.horizon_days = Number.isFinite(v) ? Math.min(365, Math.max(1, v)) : 1;
+    }));
+    el.append(textField("start date (YYYY-MM-DD, optional)", scenario.start_date || "",
+      (v) => (scenario.start_date = v.trim() || null)));
+    el.append(el_("div",
+      "The horizon is the full canvas the solver fits the work into. Start date is display only — bars are labeled with calendar dates when set.",
+      "hint"));
+  } else {
+    el.append(el_("div",
+      "Off: the schedule is a single 24-hour day (the original behavior).", "hint"));
+  }
+  box.append(el);
 }
 
 function renderDay() {
@@ -233,6 +313,17 @@ function renderActivities() {
     }));
     el.append(head);
     el.append(numField("duration (min)", a.duration, (v) => (a.duration = v)));
+
+    // Provenance + display (carried end-to-end from a .docx import). Editable name,
+    // section breadcrumb, and resource; the read-only `source` lets a human verify
+    // the extracted item against the document — the reliability story.
+    if (a.label !== undefined)
+      el.append(textField("name (label)", a.label || "", (v) => (a.label = v)));
+    if (a.section !== undefined)
+      el.append(textField("section", a.section || "", (v) => (a.section = v || "")));
+    if (a.resource !== undefined)
+      el.append(textField("resource", a.resource || "", (v) => (a.resource = v.trim() || null)));
+    if (a.source) el.append(el_("small", "“" + a.source + "”"));
     box.append(el);
   });
 }
@@ -242,6 +333,7 @@ function renderConstraints() {
   box.innerHTML = "";
   scenario.constraints.forEach((c, i) => {
     const el = cardShell("constraint" + (c.enabled === false ? " off" : ""));
+    if (c.id) el.dataset.cid = c.id; // lets a conflict highlight find this card
     const head = document.createElement("div");
     head.className = "card-head";
 
@@ -272,8 +364,10 @@ function constraintFields(c) {
   const f = [];
   if (c.type === "time_window") {
     f.push(activitySelect("activity", c.activity, (v) => (c.activity = v)));
-    f.push(textField("earliest (HH:MM)", c.earliest || "", (v) => (c.earliest = v || null)));
-    f.push(textField("latest end (HH:MM)", c.latest_end || "", (v) => (c.latest_end = v || null)));
+    // earliest/latest_end are "Moments": a bare "HH:MM" (day 0) or {day, time}.
+    // The editor reads either shape and writes back the compact one (string for day 0).
+    f.push(momentField("earliest", c.earliest, (v) => (c.earliest = v)));
+    f.push(momentField("latest end", c.latest_end, (v) => (c.latest_end = v)));
   } else if (c.type === "precedence") {
     f.push(activitySelect("before", c.before, (v) => (c.before = v)));
     f.push(activitySelect("after", c.after, (v) => (c.after = v)));
@@ -308,7 +402,16 @@ function constraintFields(c) {
 }
 
 // ---- result / Gantt -----------------------------------------------------
+// The horizon (minutes) for the current result: the solver's `horizon` for
+// multi-day, else the single 24h DAY. Read by hhmm() and the Gantt builder.
+let curHorizon = DAY;
+// Zoom is a 0..1 dial mapped to a px/min scale (see pxPerMin); collapsed sections.
+let zoomT = 0;
+const collapsedSections = new Set();
+
 function renderResult(result) {
+  lastResult = result;
+  curHorizon = result && result.horizon > 0 ? result.horizon : DAY;
   $("result").hidden = false;
   const status = result.status || "?";
   const pill = $("status");
@@ -321,12 +424,20 @@ function renderResult(result) {
   banner.hidden = true;
   banner.textContent = "";
   tl.innerHTML = "";
+  $("conflict").hidden = true;
+  $("conflict").innerHTML = "";
+  $("notes").hidden = true;
+  $("notes").innerHTML = "";
+  $("gantt-controls").hidden = true;
+  clearConflictHighlights();
 
   if (status === "INFEASIBLE") {
     banner.hidden = false;
     banner.className = "banner banner-bad";
     banner.textContent =
       "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
+    // The solver MAY explain the clash (another agent adds `conflict`); show it if present.
+    if (result.conflict) renderConflict(result.conflict);
     return;
   }
   if (status !== "OPTIMAL" && status !== "FEASIBLE") {
@@ -335,16 +446,53 @@ function renderResult(result) {
     banner.textContent = "Solver returned: " + status;
     return;
   }
+  // Multi-day solver notes (e.g. bucket granularity) — informational.
+  if (Array.isArray(result.notes) && result.notes.length) {
+    const n = $("notes");
+    n.hidden = false;
+    n.innerHTML = "";
+    for (const msg of result.notes) n.append(el_("div", msg, "note"));
+  }
   if (!result.schedule || !result.schedule.length) {
     banner.hidden = false;
     banner.className = "banner";
     banner.textContent = "Solved, but there are no activities to show.";
     return;
   }
-  tl.append(buildGantt(result.schedule));
+  redrawGantt();
 }
 
+// Re-render the Gantt from the last result (used by Solve and by the zoom controls).
+function redrawGantt() {
+  if (!lastResult || !lastResult.schedule || !lastResult.schedule.length) return;
+  const tl = $("timeline");
+  // Preserve horizontal scroll position across a zoom re-render where possible.
+  const prev = tl.querySelector(".gantt-scroll");
+  const keepScroll = prev ? prev.scrollLeft : 0;
+  tl.innerHTML = "";
+  $("gantt-controls").hidden = curHorizon <= DAY; // zoom only matters multi-day
+  tl.append(buildGantt(lastResult.schedule));
+  const next = tl.querySelector(".gantt-scroll");
+  if (next && keepScroll) next.scrollLeft = keepScroll;
+}
+
+// Join a schedule item to its activity by id, for label/section/resource.
+function activityFor(id) {
+  return scenario.activities.find((a) => a.id === id) || null;
+}
+function rowLabel(item) {
+  const a = activityFor(item.id);
+  return (a && a.label) || item.id;
+}
+
+// Dispatch: single-day keeps the original percent-scaled 24h chart EXACTLY;
+// multi-day (horizon > DAY) uses a pixels-per-minute, scrollable, section-grouped chart.
 function buildGantt(schedule) {
+  return curHorizon > DAY ? buildGanttMulti(schedule) : buildGanttDay(schedule);
+}
+
+// --- single-day Gantt: unchanged from the original (percent of a 24h day). ---
+function buildGanttDay(schedule) {
   const g = document.createElement("div");
   g.className = "gantt";
 
@@ -388,10 +536,391 @@ function buildGantt(schedule) {
   return g;
 }
 
+// --- multi-day Gantt: a real px/min scale, horizontally scrollable, day ticks,
+// and rows grouped under collapsible section headers (collapsing trims the
+// visible row count — the virtualization story for ~100 tasks). ---
+function buildGanttMulti(schedule) {
+  const totalDays = Math.ceil(curHorizon / DAY);
+  const pxmin = pxPerMin(totalDays);
+  const trackPx = Math.round(curHorizon * pxmin); // full timeline width in px
+
+  // Outer: a horizontally scrollable viewport; inner content is `trackPx` wide.
+  const scroll = document.createElement("div");
+  scroll.className = "gantt-scroll";
+  const g = document.createElement("div");
+  g.className = "gantt gantt-multi";
+  g.style.width = LABEL_W + trackPx + "px"; // label gutter + the scaled track
+
+  // Day axis: a tick every `step` days (keeps the count readable at any zoom).
+  const step = dayTickStep(totalDays, pxmin);
+  const axis = document.createElement("div");
+  axis.className = "gantt-row gantt-axis";
+  axis.append(el_("div", "", "gantt-label"));
+  const axisTrack = document.createElement("div");
+  axisTrack.className = "gantt-track gantt-axis-track";
+  axisTrack.style.width = trackPx + "px";
+  for (let d = 0; d <= totalDays; d += step) {
+    const t = el_("span", dayTickLabel(d), "tick-label");
+    t.style.left = d * DAY * pxmin + "px";
+    axisTrack.append(t);
+    // A faint vertical gridline at each tick.
+    const line = document.createElement("div");
+    line.className = "day-gridline";
+    line.style.left = d * DAY * pxmin + "px";
+    axisTrack.append(line);
+  }
+  axis.append(axisTrack);
+  g.append(axis);
+
+  // Group rows by section (fallback: "(no section)"), preserving first-seen order.
+  const sorted = [...schedule].sort((a, b) => a.start - b.start);
+  const groups = new Map(); // section -> items[]
+  for (const item of sorted) {
+    const a = activityFor(item.id);
+    const sec = (a && a.section) || "(no section)";
+    if (!groups.has(sec)) groups.set(sec, []);
+    groups.get(sec).push(item);
+  }
+
+  for (const [section, items] of groups) {
+    const collapsed = collapsedSections.has(section);
+    g.append(sectionHeader(section, items.length, collapsed, trackPx));
+    if (collapsed) continue;
+    for (const item of items) g.append(ganttBar(item, pxmin, trackPx));
+  }
+
+  scroll.append(g);
+  return scroll;
+}
+
+const LABEL_W = 140; // px label gutter for multi-day rows (wider names from .docx)
+
+// A collapsible section header row; clicking toggles its group's visibility.
+function sectionHeader(section, count, collapsed, trackPx) {
+  const row = document.createElement("div");
+  row.className = "gantt-row gantt-section";
+  const head = document.createElement("button");
+  head.className = "gantt-section-head";
+  head.style.width = LABEL_W + trackPx + "px";
+  head.setAttribute("aria-expanded", String(!collapsed));
+  head.append(el_("span", collapsed ? "▸" : "▾", "gantt-caret"));
+  head.append(el_("span", section, "gantt-section-name"));
+  head.append(el_("span", `${count}`, "gantt-section-count"));
+  head.onclick = () => {
+    if (collapsedSections.has(section)) collapsedSections.delete(section);
+    else collapsedSections.add(section);
+    redrawGantt();
+  };
+  row.append(head);
+  return row;
+}
+
+// One bar row in the multi-day chart, positioned in px against the horizon.
+function ganttBar(item, pxmin, trackPx) {
+  const row = document.createElement("div");
+  row.className = "gantt-row";
+  const label = el_("div", rowLabel(item), "gantt-label gantt-label-wide");
+  label.title = rowLabel(item);
+  row.append(label);
+
+  const track = document.createElement("div");
+  track.className = "gantt-track lane lane-plain";
+  track.style.width = trackPx + "px";
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.style.left = item.start * pxmin + "px";
+  bar.style.width = Math.max(3, (item.end - item.start) * pxmin) + "px";
+  bar.style.background = colorFor(item.id);
+  const span = `${hhmm(item.start)}–${hhmm(item.end)}`;
+  bar.title = `${rowLabel(item)}: ${span}`;
+  bar.append(el_("span", span, "bar-time"));
+  track.append(bar);
+  row.append(track);
+  return row;
+}
+
+// Map the 0..1 zoom dial to pixels-per-minute. At zoom 0 the whole horizon fits
+// the viewport (~760px of track); zooming in scales up to a readable density.
+function pxPerMin(totalDays) {
+  const fitWidth = 760; // approx track width inside the panel
+  const fitPxMin = fitWidth / curHorizon; // px/min that fits everything
+  // A comfortable "fully zoomed in" density: ~2.5px per minute (≈ a day spans wide).
+  const maxPxMin = Math.max(fitPxMin * 2, 2.5);
+  return fitPxMin + (maxPxMin - fitPxMin) * zoomT;
+}
+
+// Choose a day-tick interval so we never draw hundreds of labels.
+function dayTickStep(totalDays, pxmin) {
+  const dayPx = DAY * pxmin;
+  const minLabelPx = 56; // keep ~56px between day labels
+  const step = Math.ceil(minLabelPx / Math.max(dayPx, 1));
+  // Round up to a "nice" interval (1, 2, 5, 7, 10, 14, 30, …).
+  for (const nice of [1, 2, 5, 7, 10, 14, 30, 60, 90]) {
+    if (step <= nice) return nice;
+  }
+  return Math.max(1, Math.ceil(totalDays / 12));
+}
+
+// A day tick's label: a calendar date if start_date is known, else "Day N".
+function dayTickLabel(d) {
+  const sd = lastResult && lastResult.start_date;
+  if (sd) {
+    const base = new Date(sd + "T00:00:00");
+    if (!isNaN(base)) {
+      base.setDate(base.getDate() + d);
+      return base.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+  }
+  return "Day " + d;
+}
+
+// Day-aware time label: "D{day} HH:MM" in multi-day, plain "HH:MM" single-day.
 function hhmm(min) {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  const t = min % DAY;
+  const h = Math.floor(t / 60);
+  const m = t % 60;
+  const clock = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  if (curHorizon > DAY) return `D${Math.floor(min / DAY)} ${clock}`;
+  return clock;
+}
+
+// ---- conflict (INFEASIBLE explanation) ----------------------------------
+// Render the solver's conflict object (if any) and outline the offending cards.
+function renderConflict(conflict) {
+  const box = $("conflict");
+  box.hidden = false;
+  box.innerHTML = "";
+  const kind = conflict.kind ? conflict.kind : "unknown";
+  box.append(el_("div", conflict.message || "These constraints clash.", "conflict-msg"));
+  box.append(el_("div", "Conflict type: " + kind, "conflict-kind"));
+  const list = document.createElement("ul");
+  list.className = "conflict-list";
+  for (const c of conflict.constraints || []) {
+    const li = document.createElement("li");
+    const name = c.label || c.id || c.type || "constraint";
+    li.append(el_("span", name, "conflict-name"));
+    if (c.type) li.append(badge(c.type));
+    if (c.source) li.append(el_("small", "“" + c.source + "”"));
+    list.append(li);
+    highlightConstraint(c.id);
+  }
+  if (list.childElementCount) box.append(list);
+}
+
+// Find a rendered constraint card by id and flag it (red border).
+function highlightConstraint(id) {
+  if (!id) return;
+  const card = document.querySelector(`.card[data-cid="${cssEscape(id)}"]`);
+  if (card) card.classList.add("conflict-hit");
+}
+function clearConflictHighlights() {
+  document.querySelectorAll(".card.conflict-hit").forEach((c) => c.classList.remove("conflict-hit"));
+}
+// Minimal CSS.escape fallback (ids here are simple, but stay safe).
+function cssEscape(s) {
+  return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
+}
+
+// ---- .docx import: summary, streamed extraction, coverage review --------
+// After /upload: show a quick scan summary + the "Build schedule" button.
+// `coverage` = { requirement_ids[], sections[], n_blocks, n_requirements, n_dates, n_shall }.
+function renderUploadSummary(coverage) {
+  const box = $("upload-summary");
+  box.hidden = false;
+  box.innerHTML = "";
+
+  const stats = document.createElement("div");
+  stats.className = "stat-row";
+  stats.append(stat(coverage.n_requirements ?? 0, "requirements"));
+  stats.append(stat((coverage.sections || []).length, "sections"));
+  stats.append(stat(coverage.n_dates ?? 0, "dates"));
+  stats.append(stat(coverage.n_shall ?? 0, "“shall” statements"));
+  box.append(stats);
+
+  const build = document.createElement("button");
+  build.id = "build-btn";
+  build.className = "btn btn-primary";
+  build.textContent = "Build schedule →";
+  build.onclick = () => startExtract(build);
+  box.append(build);
+  box.append(el_("div",
+    "Extraction reads each section with the local model and can take a few minutes.", "hint"));
+}
+
+// Stream /extract via fetch + a reader (EventSource can't POST). Shows progress,
+// then on `done` loads the scenario into the cards and renders the review panel.
+function startExtract(btn) {
+  if (!uploadBlocks) {
+    showAlert("Upload a .docx first.");
+    return;
+  }
+  clearAlert();
+  btn.disabled = true;
+  const prog = $("extract-progress");
+  prog.hidden = false;
+  setProgress(0, 0, "Starting…");
+
+  withBusy(btn, "Building…", async () => {
+    let resp;
+    try {
+      resp = await fetch("/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blocks: uploadBlocks }),
+      });
+    } catch {
+      throw new Error("Could not reach the server — is the Flask app running?");
+    }
+    if (!resp.ok || !resp.body) {
+      const data = await safeJSON(resp);
+      throw new Error((data && (data.message || data.error)) || `Extract failed (${resp.status}).`);
+    }
+    await readSSE(resp.body, onExtractEvent);
+  }).finally(() => {
+    prog.hidden = true;
+  });
+}
+
+// One SSE event from /extract: progress (many) then a terminal done|error.
+function onExtractEvent(ev) {
+  if (ev.type === "progress") {
+    setProgress(ev.i, ev.n, ev.label || "");
+  } else if (ev.type === "error") {
+    showAlert(ev.error || "Extraction failed.");
+  } else if (ev.type === "done") {
+    setProgress(ev.coverage ? ev.coverage.n_extracted : 1, 1, "Done");
+    scenario = ev.scenario || { activities: [], constraints: [] };
+    collapsedSections.clear();
+    render();
+    renderReview(ev.coverage || {}, ev.warnings || []);
+    $("review").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function setProgress(i, n, label) {
+  const pct = n > 0 ? Math.round((i / n) * 100) : 0;
+  $("extract-progress-fill").style.width = pct + "%";
+  $("extract-progress-count").textContent = n > 0 ? `${i}/${n}` : "";
+  $("extract-progress-label").textContent = label || "Extracting…";
+}
+
+// Read a text/event-stream body, parsing `data: {json}` lines into events.
+async function readSSE(body, onEvent) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE events are separated by a blank line; each carries one or more data: lines.
+    let sep;
+    while ((sep = buf.indexOf("\n\n")) !== -1) {
+      const raw = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const data = raw
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trim())
+        .join("");
+      if (!data) continue;
+      try {
+        onEvent(JSON.parse(data));
+      } catch {
+        /* ignore a malformed frame; the terminal event still arrives */
+      }
+    }
+  }
+}
+
+// The MANDATORY review panel: did the model account for every requirement, and
+// what did it have to guess? `coverage` = { requirement_ids_in_doc[], n_in_doc,
+// n_extracted, not_extracted[], defaulted_duration[], dangling_references[],
+// n_activities, n_constraints }.
+function renderReview(coverage, warnings) {
+  const panel = $("review");
+  const box = $("review-body");
+  panel.hidden = false;
+  box.innerHTML = "";
+
+  box.append(el_("p",
+    "The local model drafted this from your document. It may have invented or guessed " +
+    "durations and could miss a requirement, so verify each item against its source " +
+    "(shown on every activity card below) before solving.", "review-note"));
+
+  const stats = document.createElement("div");
+  stats.className = "stat-row";
+  stats.append(stat(coverage.n_in_doc ?? 0, "in document"));
+  stats.append(stat(coverage.n_extracted ?? 0, "extracted"));
+  stats.append(stat(coverage.n_activities ?? 0, "activities"));
+  stats.append(stat(coverage.n_constraints ?? 0, "constraints"));
+  box.append(stats);
+
+  const notExtracted = coverage.not_extracted || [];
+  const defaulted = coverage.defaulted_duration || [];
+  const dangling = coverage.dangling_references || [];
+
+  // Dropped requirements are the headline failure — red.
+  if (notExtracted.length) {
+    box.append(reviewFlag("bad",
+      `${notExtracted.length} requirement(s) in the document were NOT extracted`,
+      notExtracted));
+  } else {
+    box.append(reviewFlag("ok", "Every requirement in the document was extracted", []));
+  }
+  // Guessed durations — amber, verify against the source.
+  if (defaulted.length) {
+    box.append(reviewFlag("warn",
+      `${defaulted.length} activity(ies) had no stated duration — duration was guessed`,
+      defaulted));
+  }
+  // Dangling references: a constraint points at a missing activity.
+  if (dangling.length) {
+    box.append(reviewFlag("bad",
+      `${dangling.length} constraint reference(s) point at a missing activity`,
+      dangling.map((d) => `${d.constraint} → ${d.missing}`)));
+  }
+  // Free-form pipeline warnings.
+  if (warnings && warnings.length) {
+    const wrap = document.createElement("div");
+    wrap.className = "review-flag review-warn";
+    wrap.append(el_("div", "Notes from extraction", "review-flag-title"));
+    const ul = document.createElement("ul");
+    ul.className = "review-pills";
+    for (const w of warnings) {
+      const li = document.createElement("li");
+      li.textContent = w;
+      ul.append(li);
+    }
+    wrap.append(ul);
+    box.append(wrap);
+  }
+}
+
+// A colored review block: title + a list of pills (ids/items).
+function reviewFlag(level, title, items) {
+  const wrap = document.createElement("div");
+  wrap.className = "review-flag review-" + level;
+  wrap.append(el_("div", title, "review-flag-title"));
+  if (items && items.length) {
+    const ul = document.createElement("ul");
+    ul.className = "review-pills";
+    for (const it of items) {
+      const li = document.createElement("li");
+      li.textContent = it;
+      ul.append(li);
+    }
+    wrap.append(ul);
+  }
+  return wrap;
+}
+
+// A small "<big number> <label>" stat tile.
+function stat(value, label) {
+  const wrap = el_("div", "", "stat");
+  wrap.append(el_("span", String(value), "stat-num"));
+  wrap.append(el_("span", label, "stat-lbl"));
+  return wrap;
 }
 
 // ---- tiny DOM helpers ---------------------------------------------------
@@ -443,6 +972,55 @@ function numField(label, value, onChange) {
 }
 function textField(label, value, onChange) {
   return field(label, value, "text", onChange);
+}
+
+// --- Moment helpers: round-trip a time field that may be "HH:MM" or {day, time}. ---
+// Read any stored Moment into a uniform {day, time}; null/"" -> null.
+function readMoment(m) {
+  if (m == null || m === "") return null;
+  if (typeof m === "string") return { day: 0, time: m };
+  return { day: Number(m.day) || 0, time: m.time || "" };
+}
+// Write back the COMPACT shape: day 0 -> a bare "HH:MM" string (preserves the
+// single-day IR); day>0 -> {day, time}. Empty time clears the whole Moment.
+function writeMoment(day, time) {
+  const t = (time || "").trim();
+  if (!t) return null;
+  const d = Math.max(0, parseInt(day, 10) || 0);
+  return d === 0 ? t : { day: d, time: t };
+}
+
+// A Moment editor: an optional "day" number input beside the "HH:MM" text input.
+// `value` is the stored Moment (string|object|null); `onChange(next)` gets the
+// compact shape back. Editing either field re-emits the combined value.
+function momentField(label, value, onChange) {
+  const m = readMoment(value) || { day: 0, time: "" };
+  const wrap = document.createElement("label");
+  wrap.className = "field field-moment";
+  wrap.append(el_("span", label, "field-lbl"));
+
+  const dayInp = document.createElement("input");
+  dayInp.type = "number";
+  dayInp.min = "0";
+  dayInp.value = m.day || 0;
+  dayInp.className = "moment-day";
+  dayInp.setAttribute("aria-label", label + " day");
+
+  const dayPrefix = el_("span", "day", "moment-prefix");
+
+  const timeInp = document.createElement("input");
+  timeInp.type = "text";
+  timeInp.value = m.time || "";
+  timeInp.placeholder = "HH:MM";
+  timeInp.className = "moment-time";
+  timeInp.setAttribute("aria-label", label + " time");
+
+  const emit = () => onChange(writeMoment(dayInp.value, timeInp.value));
+  dayInp.oninput = emit;
+  timeInp.oninput = emit;
+
+  wrap.append(dayPrefix, dayInp, timeInp);
+  return wrap;
 }
 function activitySelect(label, value, onChange) {
   const wrap = document.createElement("label");

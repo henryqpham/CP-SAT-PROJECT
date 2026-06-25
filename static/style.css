@@ -263,6 +263,189 @@ select:focus {
 }
 .bar-time { font-size: 0.68rem; opacity: 0.95; }
 
+/* --- multi-day Gantt: px-scaled, horizontally scrollable, section-grouped --- */
+.gantt-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+.gantt-controls-lbl {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.gantt-controls input[type="range"] { flex: 1; max-width: 240px; }
+
+.gantt-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0;
+  background: var(--surface);
+}
+.gantt-multi { font-size: 0.8rem; }
+/* In the multi-day chart the track is sized in px (not flex), so don't stretch it. */
+.gantt-multi .gantt-track { flex: 0 0 auto; }
+.gantt-multi .gantt-label,
+.gantt-label-wide {
+  flex: 0 0 140px;
+  width: 140px;
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  z-index: 2;
+}
+.gantt-axis-track { position: relative; height: 1.1rem; }
+.lane-plain {
+  background: var(--track);
+  border-radius: 5px;
+}
+.day-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+/* gridlines should reach down through the bar rows too */
+.gantt-multi .lane-plain { background-image: none; }
+
+/* collapsible section headers */
+.gantt-section { margin: 0.35rem 0 0.1rem; }
+.gantt-section-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: none;
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+.gantt-section-head:hover { background: #e6ebf2; }
+.gantt-caret { color: var(--muted); width: 0.9rem; flex: 0 0 auto; }
+.gantt-section-name { font-weight: 600; color: var(--ink); }
+.gantt-section-count {
+  margin-left: auto;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+}
+
+/* multi-day solver notes */
+.notes { margin-top: 0.7rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.note {
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: var(--track);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+}
+
+/* --- Moment editor: a day number beside the HH:MM text input --- */
+.field-moment .moment-prefix { color: var(--muted); font-size: 0.82rem; }
+.field-moment .moment-day { width: 4rem; }
+.field-moment .moment-time { width: 6rem; }
+
+/* --- conflict explanation on INFEASIBLE --- */
+.conflict {
+  margin-top: 0.8rem;
+  border: 1px solid #fecaca;
+  background: var(--bad-bg);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+}
+.conflict-msg { font-weight: 600; color: var(--bad); }
+.conflict-kind { font-size: 0.78rem; color: var(--muted); margin-top: 0.15rem; }
+.conflict-list { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+.conflict-list li { margin: 0.25rem 0; display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+.conflict-name { font-weight: 600; }
+.conflict-list small { font-style: italic; color: var(--muted); }
+/* the offending constraint cards get a red outline */
+.card.conflict-hit { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-bg); }
+
+/* --- .docx upload + coverage review --- */
+.file-input { font: inherit; font-size: 0.9rem; }
+.review-panel { border-left: 3px solid var(--warn); }
+.review-note { font-size: 0.88rem; color: var(--muted); margin: 0 0 0.6rem; }
+
+.stat-row { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.2rem 0 0.8rem; }
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 5rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.stat-num { font-size: 1.25rem; font-weight: 700; line-height: 1.1; }
+.stat-lbl { font-size: 0.7rem; color: var(--muted); text-align: center; }
+
+.review-flag {
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  margin: 0.45rem 0;
+  border: 1px solid var(--border);
+}
+.review-flag-title { font-weight: 600; font-size: 0.9rem; }
+.review-ok { background: var(--ok-bg); border-color: #bbf7d0; }
+.review-ok .review-flag-title { color: var(--ok); }
+.review-warn { background: var(--warn-bg); border-color: #fde68a; }
+.review-warn .review-flag-title { color: var(--warn); }
+.review-bad { background: var(--bad-bg); border-color: #fecaca; }
+.review-bad .review-flag-title { color: var(--bad); }
+.review-pills { margin: 0.4rem 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.review-pills li {
+  font-size: 0.76rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  color: var(--ink);
+}
+.review-warn .review-pills li { font-size: 0.8rem; border-radius: 6px; }
+
+/* --- extraction progress bar --- */
+.extract-progress { margin-top: 0.8rem; }
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+.progress-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+.progress-bar {
+  height: 0.55rem;
+  background: var(--track);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
 @media (max-width: 560px) {
   .gantt-label { flex-basis: 70px; width: 70px; }
   .field { flex-wrap: wrap; }

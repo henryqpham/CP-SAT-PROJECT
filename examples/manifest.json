@@ -2,5 +2,6 @@
   { "name": "lake", "title": "Lake day", "description": "The full demo — time windows, precedence, an optional kiteboard, and a conditional duration." },
   { "name": "errands", "title": "Saturday errands", "description": "A simpler morning of errands with an ordering rule." },
   { "name": "morning", "title": "Morning routine", "description": "An ordered chain — coffee, shower, breakfast, commute — as a single sequence constraint." },
-  { "name": "tight", "title": "Too tight (infeasible)", "description": "A leave-time so late that no schedule fits — shows the INFEASIBLE result." }
+  { "name": "tight", "title": "Too tight (infeasible)", "description": "A leave-time so late that no schedule fits — shows the INFEASIBLE result." },
+  { "name": "project", "title": "Multi-day project", "description": "A 10-day vehicle-test program — multi-day horizon, shared resources, a dated deadline, and an optional stress test with a conditional duration." }
 ]

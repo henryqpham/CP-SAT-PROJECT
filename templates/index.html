@@ -28,7 +28,47 @@
         </div>
       </section>
 
+      <!-- Multi-day: ingest a large requirements .docx into an editable scenario. -->
+      <section class="panel" id="upload-panel">
+        <label class="lbl" for="docx-file">Or import a requirements document (.docx)</label>
+        <div class="row">
+          <input id="docx-file" type="file" accept=".docx" class="file-input"
+            aria-label="Choose a .docx requirements document" />
+          <button id="upload-btn" class="btn">Upload</button>
+        </div>
+        <p class="hint">
+          Parsed locally on your machine — nothing is uploaded to the cloud. Large documents
+          take a few minutes on the local model.
+        </p>
+
+        <!-- Quick scan summary from /upload, with the button that kicks off extraction. -->
+        <div id="upload-summary" hidden></div>
+
+        <!-- Streaming progress during /extract (chunk i/n + section label). -->
+        <div id="extract-progress" class="extract-progress" hidden>
+          <div class="progress-head">
+            <span id="extract-progress-label">Extracting…</span>
+            <span id="extract-progress-count" class="progress-count"></span>
+          </div>
+          <div class="progress-bar"><div id="extract-progress-fill" class="progress-fill"></div></div>
+        </div>
+      </section>
+
+      <!-- Coverage / review panel from /extract — framed as a MANDATORY check that
+           the model didn't silently drop or invent anything. Hidden until import. -->
+      <section class="panel review-panel" id="review" hidden>
+        <div class="board-head">
+          <h2>Coverage &amp; review (please verify)</h2>
+        </div>
+        <div id="review-body"></div>
+      </section>
+
       <section class="panel" id="board" hidden>
+        <div class="board-head">
+          <h2>Project (multi-day)</h2>
+        </div>
+        <div id="project"></div>
+
         <div class="board-head">
           <h2>Day window</h2>
         </div>
@@ -63,6 +103,17 @@
           <span id="status" class="pill" aria-live="polite"></span>
         </div>
         <div id="banner" class="banner" hidden></div>
+        <!-- When the solver explains an INFEASIBLE result, the conflict lands here. -->
+        <div id="conflict" class="conflict" hidden></div>
+        <!-- Multi-day solver notes (e.g. bucket granularity). -->
+        <div id="notes" class="notes" hidden></div>
+        <!-- Zoom controls for the multi-day Gantt (hidden on the single-day path). -->
+        <div id="gantt-controls" class="gantt-controls" hidden>
+          <span class="gantt-controls-lbl">Zoom</span>
+          <button id="zoom-out" class="btn btn-ghost btn-sm" aria-label="Zoom out">−</button>
+          <input id="zoom" type="range" min="0" max="100" value="0" aria-label="Timeline zoom" />
+          <button id="zoom-in" class="btn btn-ghost btn-sm" aria-label="Zoom in">+</button>
+        </div>
         <div id="timeline"></div>
       </section>
     </main>

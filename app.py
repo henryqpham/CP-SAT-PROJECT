@@ -1,18 +1,22 @@
 # Flask app: serves the dashboard and the JSON endpoints.
 import json
+import queue
 import re
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()  # load any .env settings (e.g. OLLAMA_MODEL) before anything uses them
 
-from flask import Flask, jsonify, render_template, request  # noqa: E402
+from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
+from extract import extract_document  # noqa: E402
+from ingest import extract_blocks  # noqa: E402
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
-from solver import solve  # noqa: E402
+from solver import explain_infeasibility, solve  # noqa: E402
 
 app = Flask(__name__)
 
@@ -73,7 +77,71 @@ def solve_route():
                     "message": err["msg"]} for err in e.errors()]
         return jsonify({"error": "That schedule isn't valid.",
                         "details": details}), 400
-    return jsonify(solve(scenario))
+    result = solve(scenario)
+    if result.get("status") == "INFEASIBLE":
+        # Second pass (only on failure): name the conflicting requirements so the user
+        # can see WHY no schedule fits, not just that none does.
+        conflict = explain_infeasibility(scenario)
+        if conflict:
+            result["conflict"] = conflict
+    return jsonify(result)
+
+
+@app.post("/upload")
+def upload_route():
+    # Extract structured blocks from a .docx, all in memory — nothing is saved
+    # to disk and nothing leaves the machine (privacy, per CLAUDE.md).
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return jsonify({"error": "Attach a .docx file under the 'file' field."}), 400
+    if not file.filename.lower().endswith(".docx"):
+        return jsonify({"error": "Only .docx files are supported."}), 400
+    try:
+        # FileStorage.stream is the in-memory file-like object python-docx reads.
+        return jsonify(extract_blocks(file.stream))
+    except Exception:  # corrupt / not really a .docx
+        return jsonify({"error": "Could not read that .docx — is it a valid Word document?"}), 400
+
+
+@app.post("/extract")
+def extract_route():
+    # Turn /upload's structured blocks into a validated multi-day Scenario via the
+    # local map-reduce pipeline. Extraction is N sequential local-model calls (minutes
+    # on a small GPU), so we STREAM per-chunk progress over Server-Sent Events and run
+    # the work in a thread. Even if every LLM chunk fails (Ollama down), the
+    # deterministic backbone still returns a scenario — surfaced via `warnings`.
+    body = request.get_json(silent=True) or {}
+    blocks = body.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return jsonify({"error": 'Send {"blocks": [...]} from /upload first.'}), 400
+
+    def generate():
+        q: queue.Queue = queue.Queue()
+
+        def progress(i, n, label):
+            q.put({"type": "progress", "i": i, "n": n, "label": label})
+
+        def work():
+            try:
+                result = extract_document(blocks, progress=progress)
+                q.put({"type": "done", **result})
+            except Exception as e:  # unexpected hard failure
+                q.put({"type": "error", "error": f"Extraction failed: {e}"})
+            finally:
+                q.put(None)  # sentinel: stream complete
+
+        threading.Thread(target=work, daemon=True).start()
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":
