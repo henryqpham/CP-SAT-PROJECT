@@ -3,7 +3,7 @@
 import re
 from typing import Annotated, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 # "HH:MM" with HH 00..24 and MM 00..59; "24:00" is the allowed end-of-day
 # sentinel, so accept hour 24 but reject anything past it (e.g. "24:30").
@@ -33,8 +33,13 @@ class Moment(BaseModel):
     bare "HH:MM" string; only day>0 Moments serialize as the {day, time} object.
     """
 
-    day: int = Field(default=0, ge=0)  # whole days from project start
-    time: str = "00:00"                # "HH:MM" within that day
+    # extra="forbid" so a typo'd key (e.g. {"day":3,"tinme":"09:00"}) errors loudly
+    # instead of silently dropping to the wrong time; `time` is required so a partial
+    # object ({"day":3}) can't silently default to midnight.
+    model_config = ConfigDict(extra="forbid")
+
+    day: int = Field(default=0, ge=0, le=3660)  # whole days from project start (cap ~10y)
+    time: str                                   # "HH:MM" within that day (required)
 
     _check_time = field_validator("time")(_validate_hhmm)
 

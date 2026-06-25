@@ -8,11 +8,18 @@ non-negotiable, per CLAUDE.md). The returned dict is the contract later phases
 build on, so its shape is fixed; see extract_blocks below.
 """
 import datetime
+import io
 import re
+import zipfile
 
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+
+# A .docx is a zip of XML; reject one whose entries decompress past this cap BEFORE
+# python-docx loads it all into memory (a tiny file can otherwise inflate to GBs — a
+# zip bomb). file_size comes from the zip's central directory, so the check is cheap.
+MAX_UNCOMPRESSED_BYTES = 80 * 1024 * 1024  # ~80 MB of decompressed XML is plenty for any real spec
 
 # A requirement *id* anywhere in the text (e.g. "depends on VR-110"): two+ caps,
 # a dash, digits. A requirement *header* is the same id in brackets at the start.
@@ -132,6 +139,23 @@ def _block(index, kind, section_path, text, req_ids, dates, is_shall):
     }
 
 
+def _guard_zip_bomb(data: bytes):
+    """Reject a .docx whose entries decompress beyond MAX_UNCOMPRESSED_BYTES. Reads the
+    uncompressed sizes from the zip's central directory (no decompression), so a 300 KB
+    bomb that inflates to gigabytes is refused cheaply. A non-zip slips through here and
+    is rejected by Document() (the route turns that into a clean 400)."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            total = sum(zi.file_size for zi in zf.infolist())
+    except zipfile.BadZipFile:
+        return
+    if total > MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"document decompresses to ~{total // (1024 * 1024)} MB "
+            f"(limit {MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB) — refusing to parse"
+        )
+
+
 def extract_blocks(file_like):
     """Extract ordered, provenance-tagged blocks from a .docx file-like object.
 
@@ -142,13 +166,18 @@ def extract_blocks(file_like):
          "coverage": {requirement_ids, sections, n_blocks,
                       n_requirements, n_dates, n_shall}}
     """
-    doc = Document(file_like)
+    data = file_like.read() if hasattr(file_like, "read") else file_like
+    if isinstance(data, str):
+        data = data.encode()
+    _guard_zip_bomb(data)
+    doc = Document(io.BytesIO(data))  # parse from memory (caller's stream may be transient)
 
     blocks = []
     section_path = []          # running heading breadcrumb, e.g. ["4 ...", "4.2 ..."]
     all_req_ids = []           # distinct requirement ids, in first-seen order
     seen_req_ids = set()
     sections = []              # distinct heading texts, in first-seen order
+    seen_sections = set()      # O(1) dedup for `sections` (avoids an O(n^2) scan)
     n_requirements = n_dates = n_shall = 0
 
     def note_ids(req_ids):
@@ -176,7 +205,8 @@ def extract_blocks(file_like):
                 # anything deeper (we're now under a new branch of the tree).
                 del section_path[level - 1:]
                 section_path.append(text)
-                if text not in sections:
+                if text not in seen_sections:
+                    seen_sections.add(text)
                     sections.append(text)
 
             blocks.append(_block(len(blocks), kind, section_path, text,

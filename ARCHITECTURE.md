@@ -56,7 +56,8 @@ endpoints.
 | `models.py` | The IR defined as Pydantic types — the single JSON contract shared by every route, dashboard, and solver. |
 | `parse.py` | Calls a local Ollama model to turn ONE sentence into a validated `Scenario`, with one repair retry. |
 | `ingest.py` | Uses python-docx to turn a `.docx` into ordered structured blocks (section, requirement ids, dates), preserving provenance. |
-| `extract.py` | Map-reduce: chunks the blocks, drafts each chunk with the local model, merges into one multi-day `Scenario`, and emits a coverage report. |
+| `extract_det.py` | The deterministic backbone: pure functions over the blocks that read durations, resources, dependencies, and dated milestones by rule (with provenance and a method tag), no LLM. |
+| `extract.py` | The orchestrator: runs the deterministic passes first, calls the local model ONLY for the residual rules can't resolve, merges into one multi-day `Scenario`, and emits a coverage report that records how each item was resolved. |
 | `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model (single-day OR multi-day) and solves it; `explain_infeasibility` names conflicts. |
 | `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable cards + a zoomable multi-day Gantt + the coverage panel. |
 | `examples/lake.json`, `examples/project.json` | Hand-written IRs (single-day, multi-day) so you can exercise `/solve` without the LLM. |
@@ -69,9 +70,10 @@ endpoints.
   a local Ollama model and returns the validated IR as JSON.
 - **`POST /upload`** — multipart `.docx`. Returns structured blocks + a coverage summary (parsed
   in-memory; nothing is saved to disk).
-- **`POST /extract`** — body is `{"blocks": [...]}` from `/upload`. Runs the local map-reduce
-  pipeline and **streams** per-chunk progress (Server-Sent Events), ending with the validated
-  multi-day `Scenario`, a coverage report, and any warnings.
+- **`POST /extract`** — body is `{"blocks": [...]}` from `/upload`. Runs the deterministic-first
+  pipeline and **streams** progress (Server-Sent Events) — the deterministic passes, then any
+  scoped model call on the residual — ending with the validated multi-day `Scenario`, a coverage
+  report, and any warnings.
 - **`POST /solve`** — body is a full IR (the edited JSON). Validates it against `models.Scenario`,
   runs `solve()`, returns `{"status": ..., "schedule": [...]}` (plus `horizon`/`start_date` for
   multi-day, and a `conflict` explanation when INFEASIBLE).
@@ -411,26 +413,49 @@ model, which differs in four ways:
   `SOLVER_TIME_LIMIT_SECONDS` with parallel `num_search_workers` — so a big project returns the best
   schedule found (status `FEASIBLE`) even when proving optimality would take too long.
 
-### From a 15-page document to an IR (`ingest.py` + `extract.py`)
+### From a 15-page document to an IR (`ingest.py` + `extract_det.py` + `extract.py`)
 
-A requirements document is far too big to feed to a local model in one prompt — it would silently
-truncate. So the document path is a **map-reduce**:
+A controlled requirements document doesn't *hide* its scheduling signal in vague prose — it states it
+structurally: `[VR-xxx]` headers, "Estimated validation effort: **3 days**", "**Owner:** Chassis Team"
+(or "Requires the shared vibration bench"), "**depends on [VR-110]**" / "shall not begin until [VR-110]",
+and dated milestones like "shall be complete by 2026-08-15". So the document path is **deterministic-first**:
+read everything you reliably can with rules, and call the local model only for the leftovers.
 
 1. **Ingest** (`ingest.py`). python-docx walks the document *in order* and emits structured blocks:
    each carries its section breadcrumb, any `[VR-xxx]` requirement ids, detected dates, and whether
    it's a "shall" statement — always keeping the original text as provenance.
-2. **Chunk** (`extract.py`). Blocks are grouped on section boundaries into chunks small enough to fit
-   the model with headroom (never splitting a requirement from its body).
-3. **Map.** Each chunk is sent to the local model *sequentially* (privacy + a small GPU) to draft the
-   fuzzy parts — durations, resources, labels, and any dependencies it sees.
-4. **Reduce + reconcile.** The drafts are merged into one `Scenario`, deduped by requirement id.
-   Crucially there's a **deterministic backbone**: every `[VR-xxx]` that exists in the document
-   becomes an activity with its real source text *regardless of what the model said*, explicit
-   dependencies are pulled out with regex, and a **coverage report** lists any requirement that
-   wasn't extracted or any constraint that points at a missing one. So even when the local model
-   returns garbage JSON for a chunk (it does), nothing is silently dropped — the report shows it, and
-   the schedule is still built. That report, plus the per-item `source`, is the same reliability idea
-   from §1 scaled to a 30-requirement document.
+2. **Read the structure with rules** (`extract_det.py`). Pure functions over those blocks build the
+   spine — every `[VR-xxx]` definition becomes an activity with its real source text — and then read
+   the rest *directly and with provenance*: a duration from an effort phrase ("3 days" → 4320 min), a
+   resource from an `Owner:` / "Requires the shared …" lead-in, precedence edges from the narrow
+   dependency phrasings, and deadlines from dated milestones. Each field is tagged with *how* it was
+   resolved (`deterministic` or `missing`) — no defaults are injected here, so a real rule-read is
+   never confused with a guess. The dependency regex keeps its **narration guard**: "after [VR-200]
+   *is photographed*" is narrative, not a prerequisite, and is recorded as such rather than turned
+   into a false edge.
+3. **Scoped fallback for the residual** (`extract.py`). Only the requirements a rule left open — no
+   stated duration/resource — are batched and sent to the local model (privacy + a small GPU). For a
+   well-formed spec that residual is **often empty, so the model isn't called at all**. The model can
+   only fill those missing fields; it never creates a dependency edge — every edge stays deterministic
+   and authoritative, so the narration / false-edge guard is never reopened by the fallback. (Any
+   cross-reference the rules did not turn into an edge — narrative or genuinely off-format — is
+   surfaced in the coverage report for human review, never silently added.)
+4. **Merge + reconcile.** The deterministic reads and any residual fills are merged into one
+   `Scenario`, one activity per requirement, deduped by id. A **coverage report** then accounts for
+   every `[VR-xxx]` in the raw document and flags any constraint pointing at a missing activity, plus
+   an `extraction` block recording *how* each item was resolved (`deterministic` / `llm` / `default`,
+   the dependency split, the residual list, and the LLM call count). So nothing is silently dropped —
+   the report shows it, and the per-item `source` plus the resolution method make the trust story
+   *quantifiable*. This is the same reliability idea from §1, scaled to a 30-requirement document.
+
+**Why deterministic-first matters.** The old design ran the *whole* document through the local model
+as a map-reduce, and that was both slow and unreliable: it took minutes, and the small local model
+returned invalid JSON for a large fraction of the dense chunks. Because a well-formed spec states its
+signal structurally, rules resolve essentially everything — so minutes collapse to a fraction of a
+second *without* weakening reliability. On the 15-page synthetic spec the shift is concrete:
+≈240 s → ~0.01 s, 38.5% invalid-JSON chunks → 0 model calls, and full 29/29 requirement coverage
+(it also fixed a latent bug where a trailing section glued onto the last requirement and manufactured
+a spurious edge — the real precedence count is 28).
 
 ### When it can't fit: naming the conflict (`explain_infeasibility`)
 

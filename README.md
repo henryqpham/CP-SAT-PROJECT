@@ -22,8 +22,11 @@ not just the result. Every constraint carries the `source` phrase it came from.
 
 There are **two ways in**. For a quick day, type a **sentence** → `/parse`. For a real project,
 upload a **`.docx`** → `/upload` extracts structured blocks (locally, with python-docx), then
-`/extract` runs a **map-reduce** over the document (chunk → per-chunk local-LLM draft → merge) into
-one large multi-day `Scenario`. Both paths land in the same editable JSON, which you review and send
+`/extract` reads the document's structured signal with **rules first** — durations, resources,
+dependencies, and dated milestones via regex over the ordered blocks — and calls the local model
+**only for the residue** rules can't resolve, merging one activity per `[VR-xxx]` into one large
+multi-day `Scenario`. So a 15-page spec extracts in well under a second with zero model calls,
+instead of minutes. Both paths land in the same editable JSON, which you review and send
 to `/solve` (CP-SAT). One Flask app serves the dashboard (`/`) plus these JSON endpoints — `/parse`,
 `/upload`, `/extract` (streams progress), `/solve` (attaches a conflict explanation when INFEASIBLE),
 `/example[/<name>]` (hand-written demo IR), and `/examples` (the dropdown manifest). No build step,
@@ -38,7 +41,8 @@ flowchart LR
         direction TB
         PARSE["/parse<br/>one sentence"]
         UPLOAD["/upload<br/>ingest.py"]
-        EXTRACT["/extract<br/>extract.py (map-reduce)"]
+        EXTRACT["/extract<br/>extract.py orchestrator"]
+        DET["extract_det.py<br/>rules: durations,<br/>resources, deps, dates"]
         SOLVE["/solve<br/>CP-SAT + explain"]
         EXAMPLE["/example<br/>demo IR"]
         MODELS["models.py<br/>Pydantic IR"]
@@ -48,9 +52,10 @@ flowchart LR
 
     FE -->|sentence| PARSE --> LLM
     FE -->|".docx"| UPLOAD -->|blocks| FE
-    FE -->|blocks| EXTRACT --> LLM
+    FE -->|blocks| EXTRACT -->|deterministic first| DET
+    DET -->|residual only| LLM
     LLM -->|constraints JSON| PARSE
-    LLM -->|partial IR per chunk| EXTRACT
+    LLM -.->|"fallback: fills residual"| EXTRACT
     PARSE -->|editable IR| FE
     EXTRACT -->|"IR + coverage report"| FE
     FE -->|"Load example"| EXAMPLE -->|editable IR| FE
@@ -71,7 +76,9 @@ CP-SAT-PROJECT/
 ├── models.py            # Pydantic IR: Activity + constraint union + Moment time + multi-day fields — the JSON contract
 ├── parse.py             # local Ollama model: ONE sentence -> validated Scenario (single-day path)
 ├── ingest.py            # python-docx: a .docx -> ordered structured blocks (section, requirement ids, dates), with provenance
-├── extract.py           # map-reduce: blocks -> chunk -> per-chunk local-LLM draft -> merge/dedup -> multi-day Scenario + coverage report
+├── extract_det.py       # deterministic backbone: blocks -> activities + constraints (durations, resources, deps, dates) by regex, no LLM
+├── extract.py           # deterministic-first orchestrator: rules first, local LLM only on the residual; emits a method-tagged coverage report
+├── bench_extract.py     # before/after extraction benchmark + regression harness (wall-clock, LLM calls, edge count)
 ├── solver.py            # Scenario -> CP-SAT -> schedule (single-day OR multi-day); explain_infeasibility names conflicts
 ├── smoke.py             # runnable green-gate tests + verify_schedule (asserts every constraint holds)
 ├── examples/lake.json   # hand-written single-day IR to test /solve without the LLM
@@ -86,12 +93,14 @@ CP-SAT-PROJECT/
 
 `solver.py` is the CP-SAT core — it translates each constraint into a CP-SAT call
 (`add_no_overlap`, `only_enforce_if`, time-window bounds, a makespan objective for multi-day…); the
-rest (`models.py`, `parse.py`, `ingest.py`, `extract.py`, `app.py`, `templates/`, `static/`) is the
-surrounding plumbing. The document path (`ingest.py` + `extract.py`) leans on a **deterministic
-backbone**: every `[VR-xxx]` requirement found in the doc becomes an activity with its real source
-text and is reconciled in a coverage report, so the local LLM only *drafts* the fuzzy details
-(durations, resources) and can never silently drop a requirement — even when it returns garbage for
-a chunk.
+rest (`models.py`, `parse.py`, `ingest.py`, `extract_det.py`, `extract.py`, `app.py`, `templates/`,
+`static/`) is the surrounding plumbing. The document path is **deterministic-first**: `extract_det.py`
+reads each `[VR-xxx]` requirement's duration, resource, dependencies, and dated deadlines by regex
+over the ordered blocks, and `extract.py` calls the local LLM **only on the residual** rules can't
+resolve (often zero requirements). Every requirement found in the doc becomes an activity with its
+real source text and is reconciled in a coverage report that records **how each item was resolved**
+(deterministic / llm / default) — so the local model is a scoped fallback that can never silently
+drop a requirement, and a well-formed spec needs no model call at all.
 
 ## The intermediate format (IR)
 
@@ -155,15 +164,18 @@ stopped. Verify everything with `python smoke.py` (the green gate).
 
 To try the document path: generate the sample spec with `python testdata/make_sample_docx.py`, then
 in the dashboard upload `testdata/sample_vehicle_requirements.docx` → review the coverage report →
-**Solve**. Multi-day solver knobs (env): `SOLVER_BUCKET_MINUTES` (default 15), `SOLVER_TIME_LIMIT_SECONDS` (10), `SOLVER_WORKERS` (8).
+**Solve**. To see the deterministic-first speedup, run `python bench_extract.py` (before/after
+extraction benchmark + regression harness). Multi-day solver knobs (env): `SOLVER_BUCKET_MINUTES` (default 15), `SOLVER_TIME_LIMIT_SECONDS` (10), `SOLVER_WORKERS` (8).
 
 ## Notes
 
 - Local-only portfolio/demo — no database, no auth, no hosting; `.docx` is parsed in-memory (never written to disk).
 - No cloud, no API key: `/parse` and `/extract` run a local Ollama model (offline); `/solve`, `/upload`,
   and the dashboard work even without it (test with `examples/lake.json` / `examples/project.json`).
-- **Trust, not magic.** Extraction runs locally and sequentially (minutes on a small GPU) and a small
-  model can guess or garble — so the document path always shows a **coverage report** (every
-  requirement accounted for) and every item keeps its `source`. Reviewing it is part of the workflow:
-  for a doc that doesn't state durations/dates, the model invents them and the timeline is partly a
+- **Trust, not magic.** Extraction is **deterministic-first**: rules read a well-formed spec in well
+  under a second with no model call, and the local model is a scoped fallback only for the residue
+  rules can't resolve. The document path always shows a **coverage report** — every requirement
+  accounted for, every item keeping its `source`, and now a record of **how each item was resolved**
+  (deterministic / llm / default). Reviewing it is part of the workflow: a signal-poor doc (no stated
+  durations/dates) still leans on the model fallback, which invents them, so the timeline is partly a
   draft. The reliability move is making each rule visible and editable, not trusting the model's answer.

@@ -1,4 +1,5 @@
 # Flask app: serves the dashboard and the JSON endpoints.
+import io
 import json
 import queue
 import re
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # load any .env settings (e.g. OLLAMA_MODEL) before anything uses them
 
-from flask import Flask, Response, jsonify, render_template, request  # noqa: E402
+from flask import Flask, Request, Response, jsonify, render_template, request  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 from extract import extract_document  # noqa: E402
@@ -18,7 +19,25 @@ from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
 from solver import explain_infeasibility, solve  # noqa: E402
 
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # cap upload size (bounds memory + the zip-bomb amplifier)
+
+
+class _InMemoryRequest(Request):
+    # Keep uploaded files entirely in memory instead of letting Werkzeug spool parts
+    # over ~500 KB to an OS temp file — so a .docx's bytes never touch the disk (privacy).
+    # Bounded by MAX_CONTENT_LENGTH below.
+    def _get_file_stream(self, total_content_length, content_type, filename=None, content_length=None):
+        return io.BytesIO()
+
+
 app = Flask(__name__)
+app.request_class = _InMemoryRequest
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+
+
+@app.errorhandler(413)
+def _too_large(e):
+    return jsonify({"error": f"File too large (limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."}), 413
 
 
 @app.get("/")
@@ -106,10 +125,11 @@ def upload_route():
 @app.post("/extract")
 def extract_route():
     # Turn /upload's structured blocks into a validated multi-day Scenario via the
-    # local map-reduce pipeline. Extraction is N sequential local-model calls (minutes
-    # on a small GPU), so we STREAM per-chunk progress over Server-Sent Events and run
-    # the work in a thread. Even if every LLM chunk fails (Ollama down), the
-    # deterministic backbone still returns a scenario — surfaced via `warnings`.
+    # deterministic-first pipeline (rules resolve most of it; the local model is a scoped
+    # fallback for the residual). We STREAM progress over Server-Sent Events and run the
+    # work in a thread, since a residual model call can still take seconds on a small GPU.
+    # Even if the model is unreachable, the deterministic backbone returns a full scenario
+    # — any gaps are surfaced via `warnings` and the coverage report.
     body = request.get_json(silent=True) or {}
     blocks = body.get("blocks")
     if not isinstance(blocks, list) or not blocks:

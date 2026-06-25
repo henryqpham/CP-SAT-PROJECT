@@ -76,6 +76,53 @@ def _scan_conditionals(scenario: Scenario, base_duration: dict):
     return optional_ids, duration_rules
 
 
+# Up to this horizon, the multi-day model uses EXACT minutes (unit=1). Bucketing rounds
+# durations UP, which — against a hard horizon/deadline — can manufacture a false
+# INFEASIBLE; staying exact for small/medium spans avoids that. Only larger horizons
+# bucket, where minute domains would be big and ~bucket-sized slack is negligible.
+EXACT_HORIZON_MINUTES = 60 * DAY  # 60 days
+
+
+def _multiday_horizon_min(scenario: Scenario) -> int:
+    """The multi-day horizon, in minutes (before bucketing). Shared by the solver and
+    the explainer so they always model the SAME problem."""
+    max_moment = 0
+    for c in scenario.constraints:
+        if c.type == "time_window":
+            for m in (c.earliest, c.latest_end):
+                if m is not None:
+                    max_moment = max(max_moment, m.to_minutes())
+    sum_all = sum(a.duration for a in scenario.activities)
+    if scenario.horizon_days is not None:
+        horizon_min = scenario.horizon_days * DAY  # hard canvas
+    else:
+        horizon_min = int(max(sum_all, max_moment, DAY) * 1.5)  # derived + padding
+    return min(horizon_min, 365 * DAY)  # absolute safety cap
+
+
+def _multiday_unit(horizon_min: int) -> int:
+    """Bucket size (minutes) for the multi-day model: exact below the threshold, the
+    configurable bucket above it."""
+    if horizon_min <= EXACT_HORIZON_MINUTES:
+        return 1
+    return _env_int("SOLVER_BUCKET_MINUTES", 15)
+
+
+def _add_resource_no_overlap(model, scenario, intervals):
+    """Activities sharing a `resource` form a single-capacity resource — serialize them.
+    Enforced in BOTH the single-day and multi-day paths so the IR's `resource` field
+    never silently does nothing. Resource-free scenarios add zero constraints (so the
+    existing single-day examples are unchanged)."""
+    groups = defaultdict(list)
+    for a in scenario.activities:
+        if a.resource:
+            groups[a.resource].append(a.id)
+    for ids in groups.values():
+        ivs = [intervals[i] for i in ids if i in intervals]
+        if len(ivs) >= 2:
+            model.add_no_overlap(ivs)
+
+
 def solve(scenario: Scenario) -> dict:
     """Dispatch to the single-day or multi-day model builder by the IR's own gate."""
     if scenario.is_multi_day:
@@ -186,6 +233,8 @@ def _solve_single_day(scenario: Scenario) -> dict:
         if before in ends and after in starts:
             model.add(ends[before] <= starts[after])
 
+    _add_resource_no_overlap(model, scenario, intervals)  # per-resource serialization
+
     for c in scenario.constraints:
         if not c.enabled:
             continue
@@ -228,32 +277,12 @@ def _solve_multi_day(scenario: Scenario) -> dict:
     model = cp_model.CpModel()
     notes = []
 
-    # Bucket granularity: model in `unit`-minute steps so a multi-week horizon
-    # stays a few-thousand-point domain instead of tens of thousands. The IR stays
-    # in minutes; we scale in here and scale back out when reading the schedule.
-    unit = _env_int("SOLVER_BUCKET_MINUTES", 15)
-
     base_duration = {a.id: a.duration for a in scenario.activities}
 
-    # --- Horizon (minutes), then converted to units --------------------------
-    # Largest absolute time any constraint refers to (deadlines/release dates).
-    max_moment = 0
-    for c in scenario.constraints:
-        if c.type == "time_window":
-            for m in (c.earliest, c.latest_end):
-                if m is not None:
-                    max_moment = max(max_moment, m.to_minutes())
-    sum_all = sum(base_duration.values())
-
-    if scenario.horizon_days is not None:
-        # User-set horizon is a hard canvas: work that doesn't fit -> INFEASIBLE.
-        horizon_min = scenario.horizon_days * DAY
-    else:
-        # Derived: comfortably cover the work and the latest deadline, then pad.
-        need = max(sum_all, max_moment, DAY)
-        horizon_min = int(need * 1.5)
-    horizon_min = min(horizon_min, 365 * DAY)  # absolute safety cap
-
+    # Horizon (minutes) and bucket size — shared with the explainer so the two always
+    # model the same problem. `unit` is 1 (exact) up to EXACT_HORIZON_MINUTES.
+    horizon_min = _multiday_horizon_min(scenario)
+    unit = _multiday_unit(horizon_min)
     H = max(1, math.ceil(horizon_min / unit))  # horizon in units
 
     if scenario.day is not None:
@@ -341,16 +370,7 @@ def _solve_multi_day(scenario: Scenario) -> dict:
         if before in ends and after in starts:
             model.add(ends[before] <= starts[after])
 
-    # Auto no_overlap per shared resource (a single-capacity resource serializes
-    # its activities). More correct and far cheaper at scale than no_overlap("all").
-    res_groups = defaultdict(list)
-    for a in scenario.activities:
-        if a.resource:
-            res_groups[a.resource].append(a.id)
-    for ids in res_groups.values():
-        ivs = [intervals[i] for i in ids if i in intervals]
-        if len(ivs) >= 2:
-            model.add_no_overlap(ivs)
+    _add_resource_no_overlap(model, scenario, intervals)  # per-resource serialization
 
     for c in scenario.constraints:
         if not c.enabled:
@@ -361,7 +381,8 @@ def _solve_multi_day(scenario: Scenario) -> dict:
                 continue
             if c.earliest is not None:
                 # Round a start lower-bound DOWN and a deadline UP — both loosen, so
-                # bucketing never manufactures a false INFEASIBLE.
+                # bucketing never tightens these (durations are handled exactly below
+                # EXACT_HORIZON_MINUTES, where bucketing is off entirely).
                 model.add(starts[c.activity] >= c.earliest.to_minutes() // unit)
             if c.latest_end is not None:
                 model.add(ends[c.activity] <= math.ceil(c.latest_end.to_minutes() / unit))
@@ -472,25 +493,19 @@ def _build_intervals(model, scenario, lo, hi, unit, optional_ids, duration_rules
 
 def _add_overlaps(model, scenario, intervals):
     """no_overlap (all/subset) + auto per-resource no_overlap — these CANNOT be reified,
-    so the explainer adds them unconditionally and diagnoses them via relaxation instead."""
-    from collections import defaultdict
+    so the explainer adds them unconditionally and diagnoses them via relaxation instead.
+    Mirrors exactly what the solve paths enforce (incl. resources), so the explainer never
+    models a stricter problem than solve()."""
     for c in scenario.constraints:
         if c.enabled and c.type == "no_overlap":
             ivs = (list(intervals.values()) if c.activities == "all"
                    else [intervals[a] for a in c.activities if a in intervals])
             if ivs:
                 model.add_no_overlap(ivs)
-    groups = defaultdict(list)
-    for a in scenario.activities:
-        if a.resource:
-            groups[a.resource].append(a.id)
-    for ids in groups.values():
-        ivs = [intervals[i] for i in ids if i in intervals]
-        if len(ivs) >= 2:
-            model.add_no_overlap(ivs)
+    _add_resource_no_overlap(model, scenario, intervals)
 
 
-def _apply_scheduling(model, scenario, starts, ends, unit, gate=None, meta=None):
+def _apply_scheduling(model, scenario, starts, ends, unit, gate=None):
     """Apply time_window/precedence/sequence. If `gate` is given it's called with the
     constraint to obtain a per-constraint assumption literal (for the IIS); otherwise the
     constraints are added unconditionally (for the relaxation probe)."""
@@ -528,21 +543,10 @@ def _apply_scheduling(model, scenario, starts, ends, unit, gate=None, meta=None)
 
 
 def _explain_bounds(scenario, unit):
-    """(lo, hi) variable bounds in units, matching the path solve() would take."""
+    """(lo, hi) variable bounds in units, matching the path solve() would take (shares the
+    same horizon helper, so the explainer never diverges from the solver)."""
     if scenario.is_multi_day:
-        max_moment = 0
-        for c in scenario.constraints:
-            if c.type == "time_window":
-                for m in (c.earliest, c.latest_end):
-                    if m is not None:
-                        max_moment = max(max_moment, m.to_minutes())
-        sum_all = sum(a.duration for a in scenario.activities)
-        if scenario.horizon_days is not None:
-            horizon_min = scenario.horizon_days * DAY
-        else:
-            horizon_min = int(max(sum_all, max_moment, DAY) * 1.5)
-        horizon_min = min(horizon_min, 365 * DAY)
-        return 0, max(1, math.ceil(horizon_min / unit))
+        return 0, max(1, math.ceil(_multiday_horizon_min(scenario) / unit))
     lo, hi = 0, DAY
     if scenario.day is not None:
         ds, de = _to_minutes(scenario.day.start), _to_minutes(scenario.day.end)
@@ -551,28 +555,26 @@ def _explain_bounds(scenario, unit):
     return lo, hi
 
 
-def explain_infeasibility(scenario: Scenario) -> dict | None:
-    """Best-effort explanation of WHY a scenario is INFEASIBLE, as a conflict dict
-    {kind, message, constraints:[{id,type,label,source}]} — or None if it can't.
+def _core_constraints(solver, meta) -> list:
+    """Dedup the solver's minimal sufficient-assumptions set into constraint metas."""
+    seen, cons = set(), []
+    for idx in solver.sufficient_assumptions_for_infeasibility():
+        mt = meta.get(idx)
+        if mt and mt["id"] not in seen:
+            seen.add(mt["id"])
+            cons.append(mt)
+    return cons
 
-    Logic conflicts (precedence cycles, deadline-vs-dependency, tight windows) are found by
-    reifying each gateable rule behind an assumption literal and reading the solver's minimal
-    sufficient set. no_overlap is NOT reifiable, so if no gateable subset explains it we probe
-    by relaxation (drop overlaps): if that frees the schedule, it's resource over-subscription.
-    """
-    if not scenario.activities:
-        return None
-    unit = _env_int("SOLVER_BUCKET_MINUTES", 15) if scenario.is_multi_day else 1
-    base_duration = {a.id: a.duration for a in scenario.activities}
-    optional_ids, duration_rules = _scan_conditionals(scenario, base_duration)
-    lo, hi = _explain_bounds(scenario, unit)
 
-    # ---- pass 1: gated logic IIS ----
+def _gated_solve(scenario, lo, hi, unit, optional_ids, duration_rules, with_overlaps):
+    """Build the model with every gateable rule (time_window/precedence/sequence) behind an
+    assumption literal — optionally with the ungateable overlaps — and solve.
+    Returns (status, solver, meta, had_lits)."""
     model = cp_model.CpModel()
     starts, ends, intervals = _build_intervals(model, scenario, lo, hi, unit, optional_ids, duration_rules)
-    _add_overlaps(model, scenario, intervals)
-
-    lits, meta = [], {}
+    if with_overlaps:
+        _add_overlaps(model, scenario, intervals)
+    meta, lits = {}, []
 
     def gate(c):
         lit = model.new_bool_var(f"on_{c.id}")
@@ -581,34 +583,60 @@ def explain_infeasibility(scenario: Scenario) -> dict | None:
         return lit
 
     _apply_scheduling(model, scenario, starts, ends, unit, gate=gate)
-
     if lits:
         model.add_assumptions(lits)
-        s = cp_model.CpSolver()
-        s.parameters.max_time_in_seconds = 5.0
-        if s.solve(model) == cp_model.INFEASIBLE:
-            seen, cons = set(), []
-            for idx in s.sufficient_assumptions_for_infeasibility():
-                mt = meta.get(idx)
-                if mt and mt["id"] not in seen:
-                    seen.add(mt["id"])
-                    cons.append(mt)
-            if cons:
-                labels = ", ".join(c["label"] or c["id"] for c in cons)
-                return {"kind": "logic",
-                        "message": f"These rules cannot all hold together: {labels}.",
-                        "constraints": cons[:8]}
+    s = cp_model.CpSolver()
+    s.parameters.max_time_in_seconds = 5.0
+    return s.solve(model), s, meta, bool(lits)
 
-    # ---- pass 2: relaxation probe — drop overlaps; if it frees up, blame resources ----
+
+def _logic_conflict(cons: list) -> dict:
+    shown = cons[:8]
+    labels = ", ".join(c["label"] or c["id"] for c in shown)
+    if len(cons) > len(shown):
+        labels += f", and {len(cons) - len(shown)} more"
+    return {"kind": "logic",
+            "message": f"These rules cannot all hold together: {labels}.",
+            "constraints": shown}
+
+
+def explain_infeasibility(scenario: Scenario) -> dict | None:
+    """Best-effort explanation of WHY a scenario is INFEASIBLE, as a conflict dict
+    {kind, message, constraints:[{id,type,label,source}]} — or None if it isn't infeasible.
+
+    Two passes. Pass 1 reifies each gateable rule (precedence/sequence/time_window deadlines)
+    behind an assumption literal over the FULL model and reads the solver's minimal sufficient
+    set — naming logic conflicts (cycles, deadline-vs-dependency, tight windows). no_overlap and
+    per-resource serialization are NOT reifiable; if pass 1 finds no gateable core, pass 2 drops
+    the overlaps: if that frees the schedule it's resource over-subscription; if a logic conflict
+    still remains (a two-cause scenario), we surface that nameable logic core instead of giving up.
+    """
+    if not scenario.activities:
+        return None
+    # Use the SAME bucket/horizon the solver used, so the explainer models the identical
+    # problem (a divergence here would let it disagree with solve() about feasibility).
+    unit = _multiday_unit(_multiday_horizon_min(scenario)) if scenario.is_multi_day else 1
+    base_duration = {a.id: a.duration for a in scenario.activities}
+    optional_ids, duration_rules = _scan_conditionals(scenario, base_duration)
+    lo, hi = _explain_bounds(scenario, unit)
+    args = (scenario, lo, hi, unit, optional_ids, duration_rules)
+
+    # Pass 1: full model (overlaps ON), gated. Feasible here ⇒ not actually infeasible.
+    st, s, meta, _ = _gated_solve(*args, with_overlaps=True)
+    if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    if st == cp_model.INFEASIBLE:
+        cons = _core_constraints(s, meta)
+        if cons:
+            return _logic_conflict(cons)  # a gateable subset alone explains it
+
+    # No gateable core ⇒ the (or a) cause is the ungateable overlaps. Diagnose by relaxation.
     overlap_cons = [c for c in scenario.constraints if c.enabled and c.type == "no_overlap"]
     has_resource = any(a.resource for a in scenario.activities)
     if overlap_cons or has_resource:
-        m2 = cp_model.CpModel()
-        s2, e2, _ = _build_intervals(m2, scenario, lo, hi, unit, optional_ids, duration_rules)
-        _apply_scheduling(m2, scenario, s2, e2, unit)  # ungated, NO overlaps added
-        solver2 = cp_model.CpSolver()
-        solver2.parameters.max_time_in_seconds = 5.0
-        if solver2.solve(m2) in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        st2, s2, meta2, _ = _gated_solve(*args, with_overlaps=False)
+        if st2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            # Dropping the overlaps frees it → resource / no-overlap over-subscription.
             cons = [{"id": c.id, "type": c.type, "label": c.label, "source": c.source}
                     for c in overlap_cons]
             if has_resource:
@@ -618,6 +646,10 @@ def explain_infeasibility(scenario: Scenario) -> dict | None:
                     "message": "Too much work must run without overlapping (shared resources / "
                                "no-overlap) to fit the available time.",
                     "constraints": cons[:8]}
+        if st2 == cp_model.INFEASIBLE:
+            cons2 = _core_constraints(s2, meta2)
+            if cons2:
+                return _logic_conflict(cons2)  # a logic conflict remains even without overlaps
 
     return {"kind": "unknown",
             "message": "No schedule satisfies all the rules; the horizon may be too short or a "

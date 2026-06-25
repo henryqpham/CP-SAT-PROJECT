@@ -85,6 +85,217 @@ def _load(name):
     return Scenario.model_validate(json.loads((EXAMPLES / f"{name}.json").read_text()))
 
 
+def regressions() -> list:
+    """Locked-in checks for bugs found in the adversarial hardening pass — one per fix.
+    Returns a list of failure strings ([] = all green). Runs offline (no Ollama, no .docx)."""
+    import io
+    import zipfile
+
+    from pydantic import ValidationError
+
+    import ingest
+    from extract import extract_document, index_requirements
+    from ingest import extract_blocks
+
+    fails = []
+
+    def check(name, cond, detail=""):
+        print(f"[{'PASS' if cond else 'FAIL'}] {name}")
+        if not cond:
+            fails.append(f"{name}: {detail}")
+
+    def mk(d):
+        return Scenario.model_validate(d)
+
+    def block(i, text):
+        return {"index": i, "kind": "requirement", "section_path": ["S"], "text": text,
+                "requirement_ids": [], "dates": [], "is_shall": False}
+
+    none_ask = lambda p: {"tasks": [], "links": []}
+
+    # solver A1: bucket rounding must NOT manufacture a false INFEASIBLE.
+    r = solve(mk({"horizon_days": 1, "activities": [{"id": "a", "duration": 7}, {"id": "b", "duration": 1433}],
+                  "constraints": [{"id": "n", "type": "no_overlap", "activities": "all"}]}))
+    check("solver: 7+1433 fits a 1-day canvas", r["status"] in ("OPTIMAL", "FEASIBLE"), r["status"])
+
+    # solver: single-day shared resources are enforced (serialized, not overlapping).
+    sd = mk({"activities": [{"id": "x", "duration": 600, "resource": "rig"},
+                            {"id": "y", "duration": 600, "resource": "rig"}], "constraints": []})
+    check("solver: single-day resource serialized", not verify_schedule(sd, solve(sd).get("schedule", [])))
+
+    # explainer: two independent causes still names the actionable logic core (not 'unknown').
+    two = mk({"activities": [{"id": "task", "duration": 120}, {"id": "p", "duration": 800, "resource": "r"},
+                             {"id": "q", "duration": 800, "resource": "r"}],
+              "constraints": [{"id": "early", "type": "time_window", "activity": "task", "earliest": "21:00"},
+                              {"id": "late", "type": "time_window", "activity": "task", "latest_end": "22:00"}]})
+    cf = explain_infeasibility(two)
+    check("explain: two-cause names logic core",
+          bool(cf) and cf["kind"] == "logic" and {"early", "late"} <= {c["id"] for c in cf["constraints"]}, str(cf))
+
+    # explainer: a FEASIBLE scenario must NOT get a fabricated conflict.
+    feas = mk({"activities": [{"id": "z", "duration": 60, "resource": "r"}], "constraints": []})
+    check("explain: feasible -> None", explain_infeasibility(feas) is None)
+
+    # explainer: pure resource over-subscription -> kind 'resource'.
+    rc = explain_infeasibility(mk({"horizon_days": 5,
+        "activities": [{"id": f"t{i}", "duration": 2880, "resource": "rig"} for i in range(3)], "constraints": []}))
+    check("explain: pure resource -> resource", bool(rc) and rc["kind"] == "resource", str(rc))
+
+    # models: malformed Moment objects are rejected (not silently midnight).
+    for bad in ({"day": 3}, {}, {"day": 3, "tinme": "09:00"}, {"day": 10 ** 9, "time": "09:00"}):
+        try:
+            mk({"activities": [{"id": "a", "duration": 1}],
+                "constraints": [{"type": "time_window", "activity": "a", "earliest": bad}]})
+            check(f"models: reject malformed Moment {bad}", False, "accepted")
+        except ValidationError:
+            check(f"models: reject malformed Moment {bad}", True)
+    # ...and a day-0 Moment still serializes to a bare string (backward compat).
+    lk = mk(json.loads((EXAMPLES / "lake.json").read_text())).model_dump()
+    check("models: day-0 Moment -> bare string",
+          next(c for c in lk["constraints"] if c["id"] == "c1")["earliest"] == "08:00")
+
+    # extract: malformed model drafts degrade gracefully (no crash, valid scenario).
+    simple = [block(0, "[VR-100] Alpha.")]
+    for ask in ({"tasks": [{"req_id": "VR-100", "duration_minutes": float("inf")}], "links": []},
+                {"tasks": "nope", "links": {"x": 1}},
+                {"tasks": [{"req_id": "VR-100", "resource": 123, "label": 99999}], "links": [42]}):
+        try:
+            Scenario.model_validate(extract_document(simple, ask=lambda p, a=ask: a)["scenario"])
+            check("extract: malformed draft survives", True)
+        except Exception as e:
+            check("extract: malformed draft survives", False, f"{type(e).__name__}: {e}")
+
+    # extract: a year-0001 date must not crash date derivation.
+    try:
+        extract_document([block(0, "[VR-100] Alpha. Due 0001-01-01.")], ask=none_ask)
+        check("extract: year-0001 date no crash", True)
+    except Exception as e:
+        check("extract: year-0001 date no crash", False, str(e))
+
+    # extract: dependency regex ignores narration, keeps a real 'performed after'.
+    narr = [block(0, "[VR-100] Inspect."), block(1, "Done after [VR-200] is photographed."), block(2, "[VR-200] Photo.")]
+    e1 = [c for c in extract_document(narr, ask=none_ask)["scenario"]["constraints"] if c["type"] == "precedence"]
+    check("extract: narration is not a dependency", e1 == [], str(e1))
+    real = [block(0, "[VR-100] Alpha."), block(1, "[VR-200] Beta."), block(2, "Beta performed after [VR-100].")]
+    e2 = [(c["before"], c["after"]) for c in extract_document(real, ask=none_ask)["scenario"]["constraints"] if c["type"] == "precedence"]
+    check("extract: real 'performed after' is a dependency", ("vr_100", "vr_200") in e2, str(e2))
+
+    # extract: a duplicate requirement definition merges (first body not discarded).
+    dup = index_requirements([block(0, "[VR-1] A."), block(1, "Effort 5 days."),
+                              block(2, "[VR-1] A again."), block(3, "Owner: Chassis.")])
+    check("extract: duplicate def merges body",
+          "5 days" in dup["VR-1"]["text"] and "Chassis" in dup["VR-1"]["text"])
+
+    # --- deterministic-first refactor: one regression per new extractor ---
+    import extract_det
+
+    def kblock(i, text, kind="requirement"):
+        return {"index": i, "kind": kind, "section_path": ["S"], "text": text,
+                "requirement_ids": [], "dates": [], "is_shall": kind == "shall"}
+
+    def boom(_p):  # the LLM must never be touched when rules resolve everything
+        raise AssertionError("LLM called despite a fully deterministic document")
+
+    # 1. Deterministic-first: a well-formed doc resolves with ZERO model calls.
+    clean = [block(0, "[VR-1] Alpha."),
+             block(1, "Estimated validation effort: 2 days. Requires the shared HIL test bench."),
+             block(2, "[VR-2] Beta."),
+             block(3, "Estimated effort: 1 day. Owner: Chassis. Depends on [VR-1].")]
+    out = extract_document(clean, ask=boom)
+    acts = {a["id"]: a for a in out["scenario"]["activities"]}
+    ex = out["coverage"]["extraction"]
+    edges = [(c["before"], c["after"]) for c in out["scenario"]["constraints"] if c["type"] == "precedence"]
+    check("extract: rules resolve -> zero LLM calls", ex["llm_calls"] == 0 and len(acts) == 2, str(ex))
+    check("extract: deterministic duration read", acts["vr_1"]["duration"] == 2880 and acts["vr_2"]["duration"] == 1440)
+    check("extract: deterministic dependency edge", ("vr_1", "vr_2") in edges, str(edges))
+    check("extract: resource precision (shared bench, not narrative)", acts["vr_1"]["resource"] == "hil_test_bench", acts["vr_1"]["resource"])
+
+    # 2. Residual fallback: a requirement with no stated duration triggers exactly one
+    #    scoped LLM call, and the value is tagged as model-resolved (never silently a guess).
+    calls = {"n": 0}
+
+    def ask_fill(_p):
+        calls["n"] += 1
+        return {"tasks": [{"req_id": "VR-3", "duration_minutes": 600, "resource": "lab"}], "links": []}
+
+    gap = [block(0, "[VR-3] Gamma."), block(1, "This requirement states no effort and no owner.")]
+    out = extract_document(gap, ask=ask_fill)
+    a3 = out["scenario"]["activities"][0]
+    check("extract: residual triggers one LLM call", calls["n"] == 1, str(calls))
+    check("extract: residual LLM fills the gap", a3["duration"] == 600 and a3["resource"] == "lab")
+    check("extract: residual duration tagged 'llm'", "VR-3" in out["coverage"]["extraction"]["duration"]["llm"])
+
+    # 3. Heading-reset: a new section ENDS a requirement's body, so trailing content can't
+    #    glue onto the last requirement and manufacture a false (self-)edge.
+    bleed = [kblock(0, "[VR-1] Alpha."),
+             kblock(1, "Estimated effort: 1 day. Owner: Chassis.", "text"),
+             kblock(2, "5  PROGRAM MILESTONES", "heading"),
+             kblock(3, "Validation shall not begin until [VR-1] is complete.", "shall")]
+    e = [(c["before"], c["after"]) for c in extract_document(bleed, ask=boom)["scenario"]["constraints"] if c["type"] == "precedence"]
+    check("extract: heading ends body (no cross-section false edge)", e == [], str(e))
+
+    # 4. Dependencies stay deterministic through the fallback: even when the residual model
+    #    asserts a precedence link (here for a narration "after [VR-x] is ..." ref), no edge is
+    #    created — the model only fills missing fields; the narration ref is logged for review.
+    def ask_assert_narration(_p):
+        return {"tasks": [{"req_id": "VR-7", "duration_minutes": 300}],
+                "links": [{"type": "precedence", "before": "VR-8", "after": "VR-7", "source": "x"}]}
+
+    narr2 = [block(0, "[VR-7] Inspect."), block(1, "Done after [VR-8] is photographed."),
+             block(2, "[VR-8] Photo."), block(3, "Estimated effort: 2 days. Owner: QA.")]
+    out = extract_document(narr2, ask=ask_assert_narration)
+    e = [(c["before"], c["after"]) for c in out["scenario"]["constraints"] if c["type"] == "precedence"]
+    xref = out["coverage"]["extraction"]["cross_references"]
+    check("extract: fallback cannot resurrect a narration edge", ("vr_8", "vr_7") not in e, str(e))
+    check("extract: narration ref recorded for review", any(r["references"] == "VR-8" for r in xref["narrative"]), str(xref))
+
+    # 5. Resource extractor precision: deliberate phrasings only; narrative "on the …" is gone.
+    check("extract_det: resource reads the shared bench, not the shall narrative",
+          extract_det.parse_resource("shall log events on the control bus. Requires the shared HIL test bench.") == "hil_test_bench")
+    check("extract_det: resource reads the 'conducted on the' form",
+          extract_det.parse_resource("Conducted on the environmental chamber.") == "environmental_chamber")
+
+    # 6. Real 15-page doc, deterministic-only: full coverage, the verified 28 real edges,
+    #    the planted self-loop, no guessed durations, and no residual (so no LLM is needed).
+    doc = ROOT / "testdata" / "sample_vehicle_requirements.docx"
+    if doc.exists():
+        with open(doc, "rb") as f:
+            db = extract_blocks(f)["blocks"]
+        o = extract_document(db, ask=boom)
+        cov, sc = o["coverage"], o["scenario"]
+        de = [(c["before"], c["after"]) for c in sc["constraints"] if c["type"] == "precedence"]
+        check("doc: 29/29 requirements, none dropped", cov["n_extracted"] == 29 and cov["not_extracted"] == [], str(cov.get("not_extracted")))
+        check("doc: 28 real dependency edges (no cross-section false edge)", len(de) == 28, len(de))
+        check("doc: planted self-loop survives", ("vr_512", "vr_512") in de)
+        check("doc: zero defaulted durations (all read by rules)", cov["defaulted_duration"] == [], str(cov["defaulted_duration"]))
+        check("doc: fully deterministic (no residual / no LLM call)",
+              cov["extraction"]["residual_requirements"] == [] and cov["extraction"]["llm_calls"] == 0, str(cov["extraction"]))
+    else:
+        check("doc: sample present (run testdata/make_sample_docx.py)", False, "missing sample_vehicle_requirements.docx")
+
+    # ingest: a zip bomb is refused (cap monkeypatched small to avoid a huge alloc here).
+    cap = ingest.MAX_UNCOMPRESSED_BYTES
+    ingest.MAX_UNCOMPRESSED_BYTES = 1000
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", b"A" * 5000)
+        try:
+            extract_blocks(io.BytesIO(buf.getvalue()))
+            check("ingest: zip bomb refused", False, "not refused")
+        except ValueError:
+            check("ingest: zip bomb refused", True)
+    finally:
+        ingest.MAX_UNCOMPRESSED_BYTES = cap
+
+    # upload: file parts stay in memory (BytesIO), never spooled to disk.
+    import app as appmod
+    stream = appmod._InMemoryRequest._get_file_stream(None, 0, "application/octet-stream", "x.docx", 0)
+    check("upload: file parts stay in memory", isinstance(stream, io.BytesIO))
+
+    return fails
+
+
 def main():
     failures = []
 
@@ -146,6 +357,10 @@ def main():
     if not ok2:
         failures.append(f"explain(self-loop): expected logic conflict naming 'loop', got {c2}")
     print(f"[{'PASS' if ok2 else 'FAIL'}] explain(self-loop) -> {c2['kind'] if c2 else None} {sorted(ids2)}")
+
+    # --- regression suite (bugs fixed in the adversarial hardening pass) ---
+    print("\n-- regressions --")
+    failures += regressions()
 
     print()
     if failures:
