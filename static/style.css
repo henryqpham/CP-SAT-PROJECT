@@ -26,24 +26,19 @@ body {
   line-height: 1.5;
 }
 
-/* dashboard shell: full-height viewport, controls on the left, timeline on the right */
-html, body { height: 100%; }
+/* dashboard shell: controls on the left, timeline on the right (sized to content) */
 .app {
-  height: 100vh;
   max-width: 1400px;
   margin: 0 auto;
-  padding: 0.9rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+  padding: 0.9rem 1.25rem 2rem;
 }
 .topbar {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding-bottom: 0.7rem;
+  margin-bottom: 1rem;
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: baseline; gap: 0.6rem; }
@@ -52,21 +47,21 @@ html, body { height: 100%; }
 .topbar-actions { display: flex; align-items: center; gap: 0.6rem; }
 
 .dash {
-  flex: 1 1 auto;
-  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(320px, 400px) 1fr;
+  grid-template-columns: minmax(320px, 380px) 1fr;
   gap: 1rem;
+  align-items: start;          /* each column is as tall as its own content */
 }
-/* each column is a panel that scrolls on its own, so the timeline stays put while you edit */
-.col-left, .col-right { overflow: auto; min-height: 0; margin: 0; }
-.col-right { display: flex; flex-direction: column; }
-.col-right #timeline { flex: 1 1 auto; min-height: 0; }
+.col-left { margin: 0; }
+.col-right {                   /* timeline stays pinned while you scroll the controls */
+  margin: 0;
+  position: sticky;
+  top: 1rem;
+}
 
 @media (max-width: 820px) {
-  .app { height: auto; }
   .dash { grid-template-columns: 1fr; }
-  .col-left, .col-right { overflow: visible; }
+  .col-right { position: static; }
 }
 
 /* panels */

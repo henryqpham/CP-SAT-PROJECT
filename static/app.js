@@ -434,16 +434,34 @@ function buildGantt(schedule) {
   const g = document.createElement("div");
   g.className = "gantt";
 
-  // Hour axis (0..24, ticks every 3h).
+  // Fit the axis to the day window if set, else to the schedule's own span (padded),
+  // so the bars fill the width instead of a thin slice of a fixed 0–24h axis.
+  let t0, t1;
+  if (scenario.day) {
+    t0 = toMin(scenario.day.start);
+    t1 = toMin(scenario.day.end);
+  } else {
+    t0 = Math.min(...schedule.map((s) => s.start));
+    t1 = Math.max(...schedule.map((s) => s.end));
+    const pad = Math.max(15, Math.round((t1 - t0) * 0.05));
+    t0 = Math.max(0, t0 - pad);
+    t1 = Math.min(DAY, t1 + pad);
+  }
+  if (!(t1 > t0)) { t0 = 0; t1 = DAY; } // degenerate fallback
+  const span = t1 - t0;
+  const pct = (min) => (100 * (min - t0)) / span;
+
+  // Time axis: ~6 "nice"-stepped ticks across the fitted window.
   const axis = document.createElement("div");
   axis.className = "gantt-row gantt-axis";
   axis.append(el_("div", "", "gantt-label"));
   const axisTrack = document.createElement("div");
   axisTrack.className = "gantt-track";
-  for (let h = 0; h <= 24; h += 3) {
-    const t = el_("span", String(h), "tick-label");
-    t.style.left = (100 * (h * 60)) / DAY + "%";
-    axisTrack.append(t);
+  const step = niceStep(span);
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const tick = el_("span", hhmm(t), "tick-label");
+    tick.style.left = pct(t) + "%";
+    axisTrack.append(tick);
   }
   axis.append(axisTrack);
   g.append(axis);
@@ -463,8 +481,8 @@ function buildGantt(schedule) {
       const bar = document.createElement("div");
       bar.className = "bar";
       bar.dataset.id = item.id;
-      bar.style.left = (100 * item.start) / DAY + "%";
-      bar.style.width = Math.max(0.8, (100 * (item.end - item.start)) / DAY) + "%";
+      bar.style.left = pct(item.start) + "%";
+      bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
       bar.style.background = colorFor(item.id);
       bar.title = `${item.id}: ${hhmm(item.start)}–${hhmm(item.end)}`;
       bar.append(el_("span", `${hhmm(item.start)}–${hhmm(item.end)}`, "bar-time"));
@@ -473,6 +491,13 @@ function buildGantt(schedule) {
       g.append(row);
     });
   return g;
+}
+
+// A "nice" tick step (minutes) giving ~6 labels across `span`.
+function niceStep(span) {
+  const target = span / 6;
+  for (const s of [15, 30, 60, 120, 180, 240, 360, 720]) if (s >= target) return s;
+  return 1440;
 }
 
 function hhmm(min) {
