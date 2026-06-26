@@ -98,8 +98,9 @@ Each constraint type then maps to a CP-SAT call:
 | `conditional` — optional activity | an optional interval + a presence bool; it only takes up space when present |
 | `conditional` — duration change | the size is a variable, fixed with `.only_enforce_if(present)` |
 
-The **objective** maximizes `(DAY + 1) * (activities kept) - span`, so the solver keeps as many
-optional activities as possible first, then packs them tightly (`span` = latest end − earliest start).
+The **objective** maximizes `(2 * DAY + 1) * (activities kept) - tidy`, so the solver keeps as many
+optional activities as possible first, then packs them tightly (`tidy` measures how spread out the
+day is). The big multiplier guarantees keeping an activity always beats a neater layout.
 
 `solve()` returns a status:
 

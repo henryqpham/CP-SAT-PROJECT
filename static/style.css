@@ -387,6 +387,7 @@ select:focus {
   color: var(--muted); background: var(--track); border-radius: 999px; padding: 0.1rem 0.4rem;
 }
 .lib-dur { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 2.2rem; text-align: right; }
+.lib-new { width: 100%; margin-bottom: 0.5rem; }
 
 /* saved-plan tabs ("missions") across the top */
 .tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }

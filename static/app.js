@@ -24,13 +24,10 @@ const COLORS = [
   "#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777",
   "#7c3aed", "#ca8a04", "#0d9488", "#2563eb", "#dc2626",
 ];
-// Activity types -> bar color + legend label. An activity with no type falls back to a
-// distinct per-activity color, so untyped examples still read clearly.
-const TYPES = {
-  REST: { label: "Rest", color: "#2563eb" },
-  CREW: { label: "Crew", color: "#16a34a" },
-  OPS: { label: "Ops", color: "#ea580c" },
-};
+// Activity types -> bar color + legend label, loaded from /static/library.json at startup.
+// An activity with no type falls back to a distinct per-activity color, so untyped examples
+// still read clearly.
+let TYPES = {};
 const colorFor = (id) => {
   const a = scenario.activities.find((x) => x.id === id);
   if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
@@ -94,17 +91,15 @@ $("sentence").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("parse-btn").click();
 });
 
-// On open: restore the saved plans, or start one from the lake example.
+// On open: restore the saved plans, or start with one empty plan. Either way, load the
+// activity library before the first render so renderLibrary + colorFor have their data.
 (async () => {
+  await loadLibrary();
   if (loadTabs()) {
     scenario = clone(tabs[activeTab].scenario);
   } else {
-    try {
-      scenario = await getJSON("/example/lake");
-    } catch {
-      scenario = { activities: [], constraints: [] };
-    }
-    tabs = [{ name: "Lake day", scenario: clone(scenario) }];
+    scenario = { activities: [], constraints: [] };
+    tabs = [{ name: "Plan 1", scenario: clone(scenario) }];
     activeTab = 0;
     saveTabs();
   }
@@ -348,21 +343,36 @@ function render() {
 }
 
 // ---- library (activity palette) ----------------------------------------
-// A fixed palette of clickable templates: clicking one appends a new activity with that
-// duration. CP-SAT then places it; the Inspector edits the selected one.
-const LIBRARY = [
-  { label: "Sleep", category: "REST", minutes: 480 },
-  { label: "Meal", category: "CREW", minutes: 60 },
-  { label: "Prep", category: "OPS", minutes: 60 },
-  { label: "Clean", category: "OPS", minutes: 30 },
-  { label: "Restock", category: "CREW", minutes: 45 },
-  { label: "Check", category: "OPS", minutes: 30 },
-  { label: "Training", category: "CREW", minutes: 180 },
-];
+// A palette of clickable templates loaded from /static/library.json: clicking one appends a
+// new activity with that duration. CP-SAT then places it; the Inspector edits the selected one.
+let LIBRARY = [];
+// Load the activity templates + type→color map from the data file. On failure both stay empty
+// (no hardcoded fallback). colorFor + renderLibrary read LIBRARY/TYPES at render time, so
+// populating them asynchronously is fine.
+async function loadLibrary() {
+  try {
+    const data = await getJSON("/static/library.json");
+    LIBRARY = data.templates || [];
+    TYPES = data.types || {};
+  } catch {
+    /* leave LIBRARY/TYPES empty — no hardcoded fallback data */
+  }
+}
 function renderLibrary() {
   const box = $("lib-templates");
   if (!box) return;
   box.innerHTML = "";
+  // "+ Activity" makes a blank activity to name + edit in the Inspector — no presets needed.
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "btn btn-ghost btn-sm lib-new";
+  add.textContent = "+ Activity";
+  add.onclick = () => {
+    scenario.activities.push({ id: uniqueActivityId("activity"), duration: 30, section: null });
+    render();
+  };
+  box.append(add);
+  // Any templates you've saved in static/library.json (none by default):
   for (const tpl of LIBRARY) {
     const row = document.createElement("button");
     row.type = "button";
