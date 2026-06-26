@@ -1,5 +1,8 @@
 // Dashboard: sentence -> /parse (or Load example) -> editable cards -> /solve -> 24h timeline.
 let scenario = { activities: [], constraints: [] };
+// Last schedule that solved successfully; kept so an INFEASIBLE edit can show the
+// last-good timeline (dimmed) instead of blanking the Gantt.
+let lastFeasibleSchedule = null;
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
@@ -36,10 +39,23 @@ $("example-select").onchange = async (e) => {
   }
 };
 
-$("solve-btn").onclick = () =>
-  withBusy($("solve-btn"), "Solving…", async () => {
+$("solve-btn").onclick = () => solveNow();
+
+// Solve the current in-memory scenario and draw the timeline. Reused by the
+// manual "Solve now" button and by the debounced live auto-solve below.
+function solveNow() {
+  return withBusy($("solve-btn"), "Solving…", async () => {
     renderResult(await post("/solve", scenario));
   });
+}
+
+// Live auto-solve: re-solve ~250ms after the last edit (trailing debounce).
+let solveTimer = null;
+function scheduleSolve() {
+  if (!scenario.activities.length) return;
+  clearTimeout(solveTimer);
+  solveTimer = setTimeout(() => solveNow(), 250);
+}
 
 $("add-activity").onclick = () => {
   scenario.activities.push({ id: uniqueActivityId(), duration: 30 });
@@ -51,10 +67,20 @@ $("add-constraint").onclick = () => {
   render();
 };
 
-// Ctrl/Cmd+Enter parses from the textarea.
+// Ctrl/Cmd+Enter parses from the textarea (dormant AI path).
 $("sentence").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("parse-btn").click();
 });
+
+// Start with an example loaded so the dashboard isn't empty on open.
+(async () => {
+  try {
+    scenario = await getJSON("/example/lake");
+    render();
+  } catch {
+    /* no example available — leave the board empty */
+  }
+})();
 
 // ---- network ------------------------------------------------------------
 async function getJSON(url) {
@@ -191,6 +217,7 @@ function render() {
   renderDay();
   renderActivities();
   renderConstraints();
+  scheduleSolve();
 }
 
 function renderDay() {
@@ -218,23 +245,70 @@ function renderDay() {
   box.append(el);
 }
 
+// Excel-style grid: one small <table> per section. Activities keep their global
+// index (for swatch color + splice), so colors stay aligned with the Gantt.
 function renderActivities() {
   const box = $("activities");
   box.innerHTML = "";
+  // Group by section in first-seen order; empty/None -> "Ungrouped".
+  const groups = new Map();
   scenario.activities.forEach((a, i) => {
-    const el = cardShell("activity");
-    const head = document.createElement("div");
-    head.className = "card-head";
-    head.append(swatch(i));
-    head.append(textInput(a.id, (v) => (a.id = v), "activity id", "card-title"));
-    head.append(deleteBtn(() => {
-      scenario.activities.splice(i, 1);
-      render();
-    }));
-    el.append(head);
-    el.append(numField("duration (min)", a.duration, (v) => (a.duration = v)));
-    box.append(el);
+    const key = (a.section || "").trim() || "Ungrouped";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ a, i });
   });
+  if (!groups.size) groups.set("Ungrouped", []);
+
+  for (const [section, rows] of groups) {
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.append(el_("h3", section, "section-title"));
+    const add = document.createElement("button");
+    add.className = "btn btn-ghost btn-sm";
+    add.textContent = "+ Activity";
+    add.onclick = () => {
+      scenario.activities.push({
+        id: uniqueActivityId(),
+        duration: 30,
+        section: section === "Ungrouped" ? null : section,
+      });
+      render();
+    };
+    head.append(add);
+    box.append(head);
+
+    const table = document.createElement("table");
+    table.className = "grid";
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    for (const h of ["", "id", "duration (min)", "section", ""]) hr.append(el_("th", h));
+    thead.append(hr);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const { a, i } of rows) {
+      const tr = document.createElement("tr");
+      tr.append(td(swatch(i)));
+      tr.append(td(textInput(a.id, (v) => (a.id = v), "activity id")));
+      tr.append(td(numField("", a.duration, (v) => (a.duration = v))));
+      tr.append(td(textField("", a.section || "", (v) => (a.section = v || null))));
+      const del = td(deleteBtn(() => {
+        scenario.activities.splice(i, 1);
+        render();
+      }));
+      del.className = "grid-del";
+      tr.append(del);
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    box.append(table);
+  }
+}
+
+function td(child) {
+  const cell = document.createElement("td");
+  cell.append(child);
+  return cell;
 }
 
 function renderConstraints() {
@@ -252,6 +326,7 @@ function renderConstraints() {
     cb.onchange = () => {
       c.enabled = cb.checked;
       el.classList.toggle("off", !cb.checked);
+      scheduleSolve();
     };
     head.append(cb);
     head.append(badge(c.type));
@@ -325,8 +400,16 @@ function renderResult(result) {
   if (status === "INFEASIBLE") {
     banner.hidden = false;
     banner.className = "banner banner-bad";
-    banner.textContent =
-      "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
+    if (lastFeasibleSchedule) {
+      banner.textContent =
+        "That change broke the schedule — nothing fits all the rules now.";
+      const g = buildGantt(lastFeasibleSchedule);
+      g.classList.add("gantt-stale");
+      tl.append(g);
+    } else {
+      banner.textContent =
+        "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
+    }
     return;
   }
   if (status !== "OPTIMAL" && status !== "FEASIBLE") {
@@ -341,7 +424,10 @@ function renderResult(result) {
     banner.textContent = "Solved, but there are no activities to show.";
     return;
   }
-  tl.append(buildGantt(result.schedule));
+  lastFeasibleSchedule = result.schedule;
+  const g = buildGantt(result.schedule);
+  renderTightness(g, result.schedule);
+  tl.append(g);
 }
 
 function buildGantt(schedule) {
@@ -376,6 +462,7 @@ function buildGantt(schedule) {
       track.className = "gantt-track lane";
       const bar = document.createElement("div");
       bar.className = "bar";
+      bar.dataset.id = item.id;
       bar.style.left = (100 * item.start) / DAY + "%";
       bar.style.width = Math.max(0.8, (100 * (item.end - item.start)) / DAY) + "%";
       bar.style.background = colorFor(item.id);
@@ -392,6 +479,63 @@ function hhmm(min) {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+// "HH:MM" -> minutes since midnight (inverse of hhmm); null/blank -> null.
+function toMin(hm) {
+  if (!hm) return null;
+  const [h, m] = String(hm).split(":").map(Number);
+  return h * 60 + m;
+}
+// Compact duration, e.g. 135 -> "2h 15m", 45 -> "45m", 120 -> "2h".
+function dur(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return (h ? h + "h" : "") + (h && m ? " " : "") + (m || !h ? m + "m" : "");
+}
+
+// Tightness readout (pure JS over the solved schedule — no extra solve):
+// (a) day slack = day.end - latest activity end; (b) per-deadline slack for each
+// enabled time_window with a latest_end. Also tints bars ending within TIGHT_MIN
+// of their own deadline so "tight" is visible on the timeline.
+const TIGHT_MIN = 15;
+function renderTightness(g, schedule) {
+  const byId = new Map(schedule.map((s) => [s.id, s]));
+
+  // Per-activity deadline (the tightest enabled time_window latest_end).
+  const deadline = new Map();
+  for (const c of scenario.constraints) {
+    if (c.type !== "time_window" || c.enabled === false || !c.latest_end) continue;
+    const d = toMin(c.latest_end);
+    if (d == null) continue;
+    if (!deadline.has(c.activity) || d < deadline.get(c.activity)) deadline.set(c.activity, d);
+  }
+  // Day end is a deadline on every activity too.
+  const dayEnd = scenario.day ? toMin(scenario.day.end) : null;
+
+  const notes = [];
+  if (dayEnd != null) {
+    const latestEnd = Math.max(...schedule.map((s) => s.end));
+    notes.push(`${dur(dayEnd - latestEnd)} free in the day`);
+  }
+  for (const [aid, d] of deadline) {
+    const s = byId.get(aid);
+    if (s) notes.push(`${aid}: ${dur(d - s.end)} before its deadline`);
+  }
+
+  // Tint each bar by how close its end is to the activity's own cap (deadline or day end).
+  g.querySelectorAll(".bar").forEach((bar) => {
+    const s = byId.get(bar.dataset.id);
+    if (!s) return;
+    const caps = [deadline.get(s.id), dayEnd].filter((x) => x != null);
+    if (!caps.length) return;
+    const slack = Math.min(...caps) - s.end;
+    if (slack <= TIGHT_MIN) bar.classList.add(slack <= 5 ? "bar-tight" : "bar-snug");
+  });
+
+  if (notes.length) {
+    const el = el_("div", notes.join("  ·  "), "slack");
+    g.prepend(el);
+  }
 }
 
 // ---- tiny DOM helpers ---------------------------------------------------
@@ -424,7 +568,10 @@ function textInput(value, onChange, aria, cls) {
   inp.value = value;
   if (aria) inp.setAttribute("aria-label", aria);
   if (cls) inp.className = cls;
-  inp.oninput = () => onChange(inp.value);
+  inp.oninput = () => {
+    onChange(inp.value);
+    scheduleSolve();
+  };
   return inp;
 }
 function field(label, value, type, onChange) {
@@ -434,7 +581,10 @@ function field(label, value, type, onChange) {
   const inp = document.createElement("input");
   inp.type = type;
   inp.value = value;
-  inp.oninput = () => onChange(inp.value);
+  inp.oninput = () => {
+    onChange(inp.value);
+    scheduleSolve();
+  };
   wrap.append(inp);
   return wrap;
 }
@@ -465,7 +615,10 @@ function activitySelect(label, value, onChange) {
     if (id === value) opt.selected = true;
     sel.append(opt);
   }
-  sel.onchange = () => onChange(sel.value);
+  sel.onchange = () => {
+    onChange(sel.value);
+    scheduleSolve();
+  };
   wrap.append(sel);
   return wrap;
 }
@@ -572,7 +725,10 @@ function selectField(label, value, options, onChange) {
     if (o.value === value) opt.selected = true;
     sel.append(opt);
   }
-  sel.onchange = () => onChange(sel.value);
+  sel.onchange = () => {
+    onChange(sel.value);
+    scheduleSolve();
+  };
   wrap.append(sel);
   return wrap;
 }

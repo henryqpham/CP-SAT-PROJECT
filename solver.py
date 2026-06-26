@@ -117,6 +117,16 @@ def solve(scenario: Scenario) -> dict:
 
         intervals[aid] = interval
 
+    # Sections are one-at-a-time resources: every activity sharing a (non-empty)
+    # section can't overlap any other in that same section.
+    sections = {}
+    for a in scenario.activities:
+        if a.section:
+            sections.setdefault(a.section, []).append(intervals[a.id])
+    for ivs in sections.values():
+        if len(ivs) >= 2:
+            model.add_no_overlap(ivs)
+
     # Objective (lexicographic): first schedule as many optional activities as
     # possible (a fuller day is the better demo), then tidy the layout. We work
     # over the *present* activities; absent optionals are neutralized so they

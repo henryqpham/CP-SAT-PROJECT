@@ -22,6 +22,7 @@ def _validate_hhmm(v: Optional[str]) -> Optional[str]:
 class Activity(BaseModel):
     id: str
     duration: int  # minutes
+    section: Optional[str] = None  # free-text group; same section = one at a time
 
 
 class _Constraint(BaseModel):
