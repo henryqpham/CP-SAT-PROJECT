@@ -52,33 +52,22 @@ endpoints.
 
 | File | Role |
 | --- | --- |
-| `app.py` | Flask routes: `/` (dashboard), `/parse` (one sentence → JSON), `/upload` + `/extract` (a `.docx` → JSON), `/solve` (JSON → schedule via CP-SAT), `/example` (hand-written demo IR). |
-| `models.py` | The IR defined as Pydantic types — the single JSON contract shared by every route, dashboard, and solver. |
-| `parse.py` | Calls a local Ollama model to turn ONE sentence into a validated `Scenario`, with one repair retry. |
-| `ingest.py` | Uses python-docx to turn a `.docx` into ordered structured blocks (section, requirement ids, dates), preserving provenance. |
-| `extract_det.py` | The deterministic backbone: pure functions over the blocks that read durations, resources, dependencies, and dated milestones by rule (with provenance and a method tag), no LLM. |
-| `extract.py` | The orchestrator: runs the deterministic passes first, calls the local model ONLY for the residual rules can't resolve, merges into one multi-day `Scenario`, and emits a coverage report that records how each item was resolved. |
-| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model (single-day OR multi-day) and solves it; `explain_infeasibility` names conflicts. |
-| `templates/index.html`, `static/*.js`, `static/style.css` | The vanilla-JS dashboard — framework-free, no build step. Split into classic `<script>` modules: `core.js` (shared state/helpers + `render()`), `editor.js` (editable cards + Moment/sequence editors), `gantt.js` (single-day chart + multi-day timeline), `coverage.js` (the trust panel), `upload.js` (.docx import flow), `main.js` (wiring). One hand-written `style.css`. |
-| `examples/lake.json`, `examples/project.json` | Hand-written IRs (single-day, multi-day) so you can exercise `/solve` without the LLM. |
-| `smoke.py` | The runnable green-gate tests + `verify_schedule`. |
+| `app.py` | Flask routes: `/` (dashboard), `/parse` (sentence → JSON via a local Ollama model), `/solve` (JSON → schedule via CP-SAT), `/example` (serves the hand-written demo IR). |
+| `models.py` | The IR defined as Pydantic types — the single JSON contract shared by parse, dashboard, and solve. |
+| `parse.py` | Calls a local Ollama model to turn a sentence into a validated `Scenario`, with one repair retry. |
+| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it. |
+| `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable constraint cards + a Gantt-style timeline. |
+| `examples/lake.json` | A hand-written IR so you can exercise `/solve` without the LLM running. |
 
 ### The routes
 
 - **`GET /`** — serves `index.html`, the dashboard.
 - **`POST /parse`** — body is `{"sentence": "..."}`. Hands it to `parse_sentence()`, which calls
-  a local Ollama model and returns the validated IR as JSON.
-- **`POST /upload`** — multipart `.docx`. Returns structured blocks + a coverage summary (parsed
-  in-memory; nothing is saved to disk).
-- **`POST /extract`** — body is `{"blocks": [...]}` from `/upload`. Runs the deterministic-first
-  pipeline and **streams** progress (Server-Sent Events) — the deterministic passes, then any
-  scoped model call on the residual — ending with the validated multi-day `Scenario`, a coverage
-  report, and any warnings.
+  a local Ollama model and returns the validated IR as JSON. This is the only route that needs Ollama running.
 - **`POST /solve`** — body is a full IR (the edited JSON). Validates it against `models.Scenario`,
-  runs `solve()`, returns `{"status": ..., "schedule": [...]}` (plus `horizon`/`start_date` for
-  multi-day, and a `conflict` explanation when INFEASIBLE).
-- **`GET /example[/<name>]`** — returns a hand-written demo IR (default `lake`), so "Load example"
-  works with no LLM involved.
+  runs `solve()`, returns `{"status": ..., "schedule": [...]}`.
+- **`GET /example`** — returns the contents of `examples/lake.json`, so "Load example" works
+  with no LLM involved.
 
 ### The IR (`models.py`)
 
@@ -304,20 +293,16 @@ second goal only as a tie-breaker):
    measured as the **span**: latest end minus earliest start.
 
 The code combines both into one number to maximize, weighting presence so heavily that one extra
-activity always beats any layout saving:
+activity always beats any span saving:
 
 ```python
-model.maximize((2 * DAY + 1) * sum(presence.values()) - tidy)
+model.maximize((DAY + 1) * sum(presence.values()) - span)
 ```
 
-The `(2 * DAY + 1)` multiplier is the lexicographic trick. The tie-breaker term `tidy` ranges over
-`[-DAY, DAY]` (it's `max_end` with a day window, else the span `max_end - min_start`), so the weight
-has to exceed that whole range — `2*DAY+1` does, which means gaining one present activity always
-outweighs any possible layout change. So the solver keeps kiteboard *and then* packs everything
-tightly. (Optional activities that get dropped are neutralized so they don't artificially widen the
-span — see the `effstart`/`effend` handling.) In the **multi-day** path the same trick uses a weight
-of `H+1`, where `H` is the horizon, because there the tie-breaker is the makespan (range `[0, H]`) —
-see §5.
+The `(DAY + 1)` multiplier is the lexicographic trick: because the span can never exceed 1440,
+gaining one present activity (worth 1441) always outweighs any possible span change. So the solver
+keeps kiteboard *and then* packs everything tightly. (Optional activities that get dropped are
+neutralized so they don't artificially widen the span — see the `effstart`/`effend` handling.)
 
 ### What you get back: OPTIMAL vs INFEASIBLE
 
@@ -376,95 +361,4 @@ OPTIMAL. You can edit `c1.earliest` to `"21:00"` in the dashboard and click Solv
 # -> INFEASIBLE
 ```
 
-If both come back as expected, constraint handling is sound end to end. The quickest way to run
-everything (both smoke tests, the multi-day example, and the infeasibility explainer) is
-`python smoke.py` — it prints `GREEN GATE PASSED` when all is well.
-
----
-
-## 5. Scaling up: multi-day schedules and large documents
-
-Sections 1–4 describe the original single-sentence, single-day app. Everything below is layered on
-top **without changing that path** — the same IR, the same solver entry point, the same dashboard.
-
-### Time becomes "minutes from project start"
-
-A single day is 0..1440 minutes. A project is the same idea stretched out: every time is **minutes
-from day 0**, and day 0 is "today." A time in the IR is now a **`Moment`** — either a bare `"HH:MM"`
-(meaning day 0) or `{"day": 3, "time": "09:00"}` (meaning `3 × 1440 + 540` minutes). Because a day-0
-Moment serializes back to a plain `"HH:MM"` string, every existing scenario is byte-for-byte
-unchanged. The `Scenario` also gains `start_date` (just for calendar labels) and `horizon_days`
-(how many days the schedule may span), and each `Activity` gains `label`, `source`, `section`, and
-`resource`.
-
-`solver.py` has one explicit fork: `scenario.is_multi_day` (true when `horizon_days` is set or any
-Moment lands past day 0). False → the original single-day model, verbatim. True → the multi-day
-model, which differs in four ways:
-
-- **A bigger horizon.** Variables range `0..H` where `H` covers the work and the latest deadline.
-- **Buckets for speed.** Over weeks, minute-granularity makes the variable domains huge, so the
-  multi-day model works in `SOLVER_BUCKET_MINUTES`-sized steps (default 15) — ~2,880 points over a
-  month instead of ~43,000. (The IR stays in minutes; we scale in and back out.)
-- **A makespan objective.** Instead of compacting one day, it minimizes the finish time of the whole
-  project. The "keep optional activities" term still dominates, now weighted `H+1` (the makespan can
-  reach `H`, so the weight must exceed it — the same lexicographic trick as §3, retargeted).
-- **Resources and a time limit.** Activities that share a `resource` get an automatic
-  `add_no_overlap` (a single-capacity machine/team), and the solve runs under
-  `SOLVER_TIME_LIMIT_SECONDS` with parallel `num_search_workers` — so a big project returns the best
-  schedule found (status `FEASIBLE`) even when proving optimality would take too long.
-
-### From a 15-page document to an IR (`ingest.py` + `extract_det.py` + `extract.py`)
-
-A controlled requirements document doesn't *hide* its scheduling signal in vague prose — it states it
-structurally: `[VR-xxx]` headers, "Estimated validation effort: **3 days**", "**Owner:** Chassis Team"
-(or "Requires the shared vibration bench"), "**depends on [VR-110]**" / "shall not begin until [VR-110]",
-and dated milestones like "shall be complete by 2026-08-15". So the document path is **deterministic-first**:
-read everything you reliably can with rules, and call the local model only for the leftovers.
-
-1. **Ingest** (`ingest.py`). python-docx walks the document *in order* and emits structured blocks:
-   each carries its section breadcrumb, any `[VR-xxx]` requirement ids, detected dates, and whether
-   it's a "shall" statement — always keeping the original text as provenance.
-2. **Read the structure with rules** (`extract_det.py`). Pure functions over those blocks build the
-   spine — every `[VR-xxx]` definition becomes an activity with its real source text — and then read
-   the rest *directly and with provenance*: a duration from an effort phrase ("3 days" → 4320 min), a
-   resource from an `Owner:` / "Requires the shared …" lead-in, precedence edges from the narrow
-   dependency phrasings, and deadlines from dated milestones. Each field is tagged with *how* it was
-   resolved (`deterministic` or `missing`) — no defaults are injected here, so a real rule-read is
-   never confused with a guess. The dependency regex keeps its **narration guard**: "after [VR-200]
-   *is photographed*" is narrative, not a prerequisite, and is recorded as such rather than turned
-   into a false edge.
-3. **Scoped fallback for the residual** (`extract.py`). Only the requirements a rule left open — no
-   stated duration/resource — are batched and sent to the local model (privacy + a small GPU). For a
-   well-formed spec that residual is **often empty, so the model isn't called at all**. The model can
-   only fill those missing fields; it never creates a dependency edge — every edge stays deterministic
-   and authoritative, so the narration / false-edge guard is never reopened by the fallback. (Any
-   cross-reference the rules did not turn into an edge — narrative or genuinely off-format — is
-   surfaced in the coverage report for human review, never silently added.)
-4. **Merge + reconcile.** The deterministic reads and any residual fills are merged into one
-   `Scenario`, one activity per requirement, deduped by id. A **coverage report** then accounts for
-   every `[VR-xxx]` in the raw document and flags any constraint pointing at a missing activity, plus
-   an `extraction` block recording *how* each item was resolved (`deterministic` / `llm` / `default`,
-   the dependency split, the residual list, and the LLM call count). So nothing is silently dropped —
-   the report shows it, and the per-item `source` plus the resolution method make the trust story
-   *quantifiable*. This is the same reliability idea from §1, scaled to a 30-requirement document.
-
-**Why deterministic-first matters.** The old design ran the *whole* document through the local model
-as a map-reduce, and that was both slow and unreliable: it took minutes, and the small local model
-returned invalid JSON for a large fraction of the dense chunks. Because a well-formed spec states its
-signal structurally, rules resolve essentially everything — so minutes collapse to a fraction of a
-second *without* weakening reliability. On the 15-page synthetic spec the shift is concrete:
-≈240 s → ~0.01 s, 38.5% invalid-JSON chunks → 0 model calls, and full 29/29 requirement coverage
-(it also fixed a latent bug where a trailing section glued onto the last requirement and manufactured
-a spurious edge — the real precedence count is 28).
-
-### When it can't fit: naming the conflict (`explain_infeasibility`)
-
-A single-day "INFEASIBLE" is usually obvious. Across 30 requirements it isn't — so when `/solve`
-returns INFEASIBLE it runs a second pass that *explains why*. It rebuilds the model with each
-**gateable** rule (precedence, sequence, time-window deadlines) behind an assumption literal, then
-asks CP-SAT for `sufficient_assumptions_for_infeasibility()` — the minimal set of rules that can't
-coexist — and maps those literals back to the offending requirements (e.g. "VR-1012 can't follow its
-prerequisites *and* meet the design-freeze date"). `add_no_overlap` can't be gated that way, so if no
-gateable subset explains it, a relaxation probe drops the overlaps: if that frees the schedule, the
-cause is **resource over-subscription** (too much work forced through one resource). The result is an
-honest, specific message instead of a bare "impossible."
+If both come back as expected, constraint handling is sound end to end.

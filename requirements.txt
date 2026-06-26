@@ -3,4 +3,3 @@ ortools
 ollama
 pydantic
 python-dotenv
-python-docx
