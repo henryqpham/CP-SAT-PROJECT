@@ -8,72 +8,73 @@ you should understand what the app does, how the pieces fit together, and — th
 
 ## 1. What the app does, and why
 
-You type a sentence describing your day:
-
-> _"Go to Lake Michigan, leave after 8 AM, grab a hamburger, sail, maybe kiteboard — and if I
-> can't kiteboard, sail twice as long — be home by 10 PM."_
-
-The app turns that into an actual **schedule**: concrete start and end times for each activity
-that respect every rule you stated. If no schedule can possibly satisfy all the rules, it tells
+You build a plan by hand — a list of activities, each with a **duration** and a **section**, plus
+the rules they must obey. The app turns that into an actual **schedule**: concrete start and end
+times for each activity that respect every rule. If no schedule can satisfy all the rules, it tells
 you that too ("INFEASIBLE") instead of quietly handing you a broken plan.
 
-The trick is that it does this in three stages, and the middle stage is the important one:
+The point of the app is **what-if**: change one input and watch the timeline react. Shorten a break
+from an hour to 30 minutes, or add a second toilet-cleaning, and the timeline redraws so you can see
+whether the day still fits or falls apart. It does this in two stages:
 
 ```
-sentence  ->  editable typed JSON (the "IR")  ->  CP-SAT solver  ->  dashboard schedule
-          (local LLM drafts)   (you review/edit)  (does the math)   (Gantt chart)
+editable typed JSON (the "IR")  ->  CP-SAT solver  ->  live timeline
+  (you build / edit by hand)        (does the math)    (Gantt chart)
 ```
 
-1. **Sentence → JSON.** An LLM — a local Ollama model — reads your sentence and drafts a structured list of
-   activities and constraints. This JSON is called the **IR** — the *intermediate representation*.
-   Think of it as a typed, machine-readable form of your sentence.
+1. **You build the JSON (the IR).** The dashboard is a spreadsheet-style grid of activities grouped
+   into sections, plus editable rule cards. This JSON — the *intermediate representation* — is the
+   single source of truth, and you own it directly.
 
-2. **You review and edit the JSON.** The dashboard shows each rule as an editable card. This is
-   the **reliability idea** at the heart of the project. An LLM can hand you a clean-looking
-   schedule that has *silently dropped one of your rules* — and you'd never know, because the
-   output looks plausible. So we don't trust the LLM to produce the *answer*. We only trust it
-   to *draft the rules*, and then we make those rules visible and editable. Every constraint
-   carries the exact `source` phrase it came from, so you can check "be home by 10 PM" really
-   did become a 10 PM deadline. The JSON, not the LLM's prose, is the source of truth.
+2. **JSON → schedule.** CP-SAT (Google's constraint solver, part of OR-Tools) takes the JSON and
+   computes a schedule that provably satisfies every enabled rule, or proves none exists. It re-runs
+   automatically (debounced) every time you edit, so the timeline is a live mirror of your inputs.
 
-3. **JSON → schedule.** CP-SAT (Google's constraint solver, part of OR-Tools) takes the
-   reviewed JSON and computes a schedule that provably satisfies every enabled rule, or proves
-   that none exists.
+A **section** (Deli, FrontDesk, Crew-A) is treated as a single resource — one thing at a time — so
+two activities in the same section can't overlap. That is what gives a what-if edit teeth: pile work
+into one section and the timeline stretches, or goes red.
 
-Everything runs locally in one small Flask app. No database, no build step, no hosting. The
-dashboard and the solver work without any LLM — only the sentence-parsing step calls a local Ollama model (no API key, nothing leaves your machine).
+Everything runs locally in one small Flask app. No database, no build step, no hosting, and no AI
+needed — nothing leaves your machine.
+
+> *Dormant AI path.* An earlier version drafted the JSON from a plain-English sentence with a local
+> Ollama model and then asked you to review it (so the model could never silently drop a rule). That
+> `/parse` path still exists but is **off** for the manual-entry MVP.
 
 ---
 
 ## 2. The pieces and the data flow
 
-The whole thing is one Flask app (`app.py`) serving a single-page dashboard plus three JSON
-endpoints.
+The whole thing is one Flask app (`app.py`) serving a single-page dashboard plus two JSON
+endpoints (a third, `/parse`, is kept but dormant).
 
 | File | Role |
 | --- | --- |
-| `app.py` | Flask routes: `/` (dashboard), `/parse` (sentence → JSON via a local Ollama model), `/solve` (JSON → schedule via CP-SAT), `/example` (serves the hand-written demo IR). |
-| `models.py` | The IR defined as Pydantic types — the single JSON contract shared by parse, dashboard, and solve. |
-| `parse.py` | Calls a local Ollama model to turn a sentence into a validated `Scenario`, with one repair retry. |
-| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it. |
-| `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: editable constraint cards + a Gantt-style timeline. |
-| `examples/lake.json` | A hand-written IR so you can exercise `/solve` without the LLM running. |
+| `app.py` | Flask routes: `/` (dashboard), `/solve` (JSON → schedule via CP-SAT), `/example[/<name>]` + `/examples` (hand-written demo IR). `/parse` is kept but dormant. |
+| `models.py` | The IR defined as Pydantic types — the single JSON contract shared by the dashboard and the solver. `Activity` carries an optional `section`. |
+| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it; each `section` becomes a one-at-a-time resource. |
+| `parse.py` | **Dormant** — calls a local Ollama model to turn a sentence into a `Scenario`. The AI path, off for the manual-entry MVP. |
+| `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: a section-grouped editable grid + a live Gantt-style timeline that auto-solves on edit. |
+| `examples/lake.json` | A hand-written IR so you can exercise `/solve` with no AI running. |
 
 ### The routes
 
 - **`GET /`** — serves `index.html`, the dashboard.
-- **`POST /parse`** — body is `{"sentence": "..."}`. Hands it to `parse_sentence()`, which calls
-  a local Ollama model and returns the validated IR as JSON. This is the only route that needs Ollama running.
 - **`POST /solve`** — body is a full IR (the edited JSON). Validates it against `models.Scenario`,
-  runs `solve()`, returns `{"status": ..., "schedule": [...]}`.
-- **`GET /example`** — returns the contents of `examples/lake.json`, so "Load example" works
-  with no LLM involved.
+  runs `solve()`, returns `{"status": ..., "schedule": [...]}`. The dashboard calls this
+  automatically (debounced) on every edit.
+- **`GET /example[/<name>]`** — returns a hand-written demo IR (default `examples/lake.json`), so
+  "Load example" works with no AI involved; `GET /examples` lists them.
+- **`POST /parse`** — *dormant.* Body `{"sentence": "..."}` → a local Ollama model would draft the
+  IR. The AI path, off for the MVP (the only route that would need Ollama running).
 
 ### The IR (`models.py`)
 
 The IR is two lists — `activities` and `constraints` — plus an optional `day` window.
 
-- An **`Activity`** is just an `id` and a `duration` in minutes, e.g. `{"id": "sail", "duration": 120}`.
+- An **`Activity`** is an `id`, a `duration` in minutes, and an optional **`section`** (free text,
+  e.g. `"Deli"`), like `{"id": "sail", "duration": 120, "section": "Lake"}`. Activities sharing a
+  section are automatically serialized — they can't overlap (each section is one resource).
 - A **`Constraint`** is one of five typed variants, picked by its `type` field (Pydantic calls
   this a *discriminated union* — it reads `type` to know which shape to expect):
   - `time_window` — an `earliest` start and/or `latest_end` for one activity.
@@ -99,35 +100,29 @@ full 0–24h day.
 
 ```mermaid
 flowchart LR
-    U(["You"]) -->|sentence| FE["Dashboard<br/>(app.js)"]
+    U(["Mission manager"]) -->|enter / edit activities| FE["Dashboard<br/>grid + live timeline (app.js)"]
 
     subgraph FLASK["Flask app (app.py)"]
         direction TB
-        PARSE["/parse"]
         SOLVE["/solve<br/>(CP-SAT)"]
         EXAMPLE["/example"]
         IR["models.py<br/>(IR contract)"]
+        PARSE["/parse<br/>(dormant)"]
     end
 
-    LLM(["Local LLM<br/>(Ollama)"])
-
-    FE -->|sentence| PARSE
-    PARSE --> LLM
-    LLM -->|draft JSON| PARSE
-    PARSE -->|editable IR| FE
+    FE -->|"edit (debounced)"| SOLVE
+    SOLVE -->|schedule| FE
     FE -->|"Load example"| EXAMPLE
     EXAMPLE -->|demo IR| FE
-    FE -->|edited IR| SOLVE
-    SOLVE -->|schedule| FE
-    IR -.validates.-> PARSE
     IR -.validates.-> SOLVE
 ```
 
-On the front end, `static/app.js` is tiny: "Parse" POSTs the sentence to `/parse` and renders
-the returned constraints as editable cards; "Load example" pulls `/example`; "Solve" POSTs the
-current (possibly edited) JSON to `/solve` and draws each scheduled activity as a positioned bar
-on a 24-hour timeline. When you edit a field, you're editing the JSON in place; the next "Solve"
-sends the new numbers.
+On the front end, `static/app.js` holds the IR in one in-memory object and renders it as a
+section-grouped editable grid. When you change a field, you're editing that JSON in place — and a
+short debounce later it POSTs the whole IR to `/solve` and redraws each scheduled activity as a
+positioned bar on the timeline, grouped into one lane per section. If a change makes the schedule
+INFEASIBLE, the last good timeline stays on screen (dimmed) with a "that change broke it" banner,
+so the centerpiece never just vanishes.
 
 ---
 
@@ -199,6 +194,10 @@ model.add_no_overlap(list(intervals.values()))
 This tells the solver: none of these time blocks may overlap. You can't be driving and sailing
 at the same minute. The solver now has to *space the blocks out* across the day. It figures out
 the arrangement; you just stated the rule.
+
+*Sections use this exact mechanism.* In the manual what-if MVP, every activity you put in the same
+`section` (say `"Deli"`) is automatically gathered into one `add_no_overlap`, so a section behaves
+like a single worker/station that can only do one thing at a time.
 
 ### precedence: do this before that
 
@@ -336,8 +335,9 @@ ollama pull granite4.1:8b       # one-time; install Ollama from ollama.com first
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-Open the dashboard, click **Load example** (no LLM needed), then **Solve**. To try your own
-sentence, type it and click **Parse →** first (this one needs a running local Ollama model).
+Open the dashboard, click **Load example** (no AI needed) and edit away — the timeline updates as
+you change things. (The sentence-parsing path is dormant; re-enabling `/parse` is the only thing
+that would need a running local Ollama model.)
 
 ### Test it (two smoke tests)
 
