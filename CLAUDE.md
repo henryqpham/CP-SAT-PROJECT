@@ -1,21 +1,23 @@
 # CLAUDE.md
 
-Natural-language scheduling optimizer: a sentence becomes editable JSON constraints, CP-SAT
-solves them, a dashboard shows the result. One local Flask app, Python only. See README.md for
-the architecture and data flow.
+Manual "what-if" schedule planner: you build editable JSON constraints by hand in a grid, CP-SAT
+solves them, a dashboard shows a live timeline. One local Flask app, Python only. The AI sentence
+path (`/parse`, Ollama) is kept but DORMANT — the MVP is manual entry. See README.md for the
+architecture and data flow.
 
 ## Commands
 
 - Install deps: `pip install -r requirements.txt`
-- Pull the local parse model (one-time): `ollama pull granite4.1:8b` (install Ollama from ollama.com first)
 - Run: `flask --app app run --debug` — dashboard at http://localhost:5000
-- Use without the LLM: GET `/example` (the demo IR), or POST `examples/lake.json` to `/solve`
+- Normal use (no LLM): GET `/example` (the demo IR), or POST `examples/lake.json` to `/solve`
+- DORMANT path only: `ollama pull granite4.1:8b` (install Ollama from ollama.com first) — needed
+  only if you re-enable `/parse`
 
 ## Structure
 
-- `app.py` — Flask routes: `/` (dashboard), `/parse` (Ollama), `/solve` (CP-SAT), `/example` and `/example/<name>` (demo IR), `/examples` (dropdown manifest)
-- `models.py` — Pydantic IR; the JSON contract shared by `/parse`, the dashboard, and `/solve`
-- `parse.py` — a local Ollama model turns a sentence into a validated `Scenario`
+- `app.py` — Flask routes: `/` (dashboard), `/solve` (CP-SAT), `/example` and `/example/<name>` (demo IR), `/examples` (dropdown manifest). `/parse` (Ollama) is kept but dormant.
+- `models.py` — Pydantic IR; the JSON contract shared by the dashboard and `/solve` (and the dormant `/parse`)
+- `parse.py` — DORMANT: a local Ollama model turns a sentence into a validated `Scenario` (AI path, off for the MVP)
 - `solver.py` — turns a `Scenario` into a CP-SAT model and solves it
 - `templates/index.html`, `static/app.js`, `static/style.css` — the vanilla-JS dashboard
 - `examples/lake.json` — a hand-written IR for testing `/solve`

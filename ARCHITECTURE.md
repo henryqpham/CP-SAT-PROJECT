@@ -1,364 +1,140 @@
 # Architecture
 
-A friendly tour of this app for someone who has never touched a constraint solver. By the end
-you should understand what the app does, how the pieces fit together, and — the main event —
-**how CP-SAT actually works**, taught through this project's lake example.
+A short tour of the app: what it does, the files, and how each constraint maps to the solver.
 
 ---
 
-## 1. What the app does, and why
+## 1. What it does
 
 You build a plan by hand — a list of activities, each with a **duration** and a **section**, plus
-the rules they must obey. The app turns that into an actual **schedule**: concrete start and end
-times for each activity that respect every rule. If no schedule can satisfy all the rules, it tells
-you that too ("INFEASIBLE") instead of quietly handing you a broken plan.
+the rules they must obey. The app turns that into a real **schedule**: start and end times that
+respect every rule. If no schedule can satisfy the rules, it says so (**INFEASIBLE**) instead of
+handing you a broken plan.
 
-The point of the app is **what-if**: change one input and watch the timeline react. Shorten a break
-from an hour to 30 minutes, or add a second toilet-cleaning, and the timeline redraws so you can see
-whether the day still fits or falls apart. It does this in two stages:
+The point is **what-if**: change one input and watch the timeline react. Shorten a break, add a
+task, and the timeline redraws so you can see if the day still fits. The flow is two steps:
 
 ```
-editable typed JSON (the "IR")  ->  CP-SAT solver  ->  live timeline
-  (you build / edit by hand)        (does the math)    (Gantt chart)
+editable JSON (the "IR")  ->  CP-SAT solver  ->  live timeline
+  (you edit by hand)          (does the math)    (Gantt chart)
 ```
 
-1. **You build the JSON (the IR).** The dashboard is a spreadsheet-style grid of activities grouped
-   into sections, plus editable rule cards. This JSON — the *intermediate representation* — is the
-   single source of truth, and you own it directly.
+1. **You own the JSON (the IR).** The dashboard is a grid of activities grouped into sections, plus
+   editable rule cards. This JSON is the single source of truth.
+2. **JSON → schedule.** CP-SAT (Google's solver, part of OR-Tools) finds a schedule that satisfies
+   every enabled rule, or proves none exists. It re-runs automatically (debounced) on every edit, so
+   the timeline is a live mirror of your inputs.
 
-2. **JSON → schedule.** CP-SAT (Google's constraint solver, part of OR-Tools) takes the JSON and
-   computes a schedule that provably satisfies every enabled rule, or proves none exists. It re-runs
-   automatically (debounced) every time you edit, so the timeline is a live mirror of your inputs.
+A **section** (Deli, FrontDesk, Crew-A) is one resource — one thing at a time — so two activities
+in the same section can't overlap. That's what gives a what-if edit teeth: pile work into one
+section and the timeline stretches, or goes red.
 
-A **section** (Deli, FrontDesk, Crew-A) is treated as a single resource — one thing at a time — so
-two activities in the same section can't overlap. That is what gives a what-if edit teeth: pile work
-into one section and the timeline stretches, or goes red.
+Everything runs locally in one small Flask app. No database, no build step, no AI needed.
 
-Everything runs locally in one small Flask app. No database, no build step, no hosting, and no AI
-needed — nothing leaves your machine.
-
-> *Dormant AI path.* An earlier version drafted the JSON from a plain-English sentence with a local
-> Ollama model and then asked you to review it (so the model could never silently drop a rule). That
-> `/parse` path still exists but is **off** for the manual-entry MVP.
+> *Dormant AI path.* An earlier version drafted the JSON from a plain-English sentence using a local
+> Ollama model, then asked you to review it. That `/parse` route still exists but is **off** for the
+> manual-entry MVP — it's the only thing that would need Ollama running.
 
 ---
 
-## 2. The pieces and the data flow
-
-The whole thing is one Flask app (`app.py`) serving a single-page dashboard plus two JSON
-endpoints (a third, `/parse`, is kept but dormant).
+## 2. The files and the data flow
 
 | File | Role |
 | --- | --- |
-| `app.py` | Flask routes: `/` (dashboard), `/solve` (JSON → schedule via CP-SAT), `/example[/<name>]` + `/examples` (hand-written demo IR). `/parse` is kept but dormant. |
-| `models.py` | The IR defined as Pydantic types — the single JSON contract shared by the dashboard and the solver. `Activity` carries an optional `section`. |
-| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it; each `section` becomes a one-at-a-time resource. |
-| `parse.py` | **Dormant** — calls a local Ollama model to turn a sentence into a `Scenario`. The AI path, off for the manual-entry MVP. |
-| `templates/index.html`, `static/app.js`, `static/style.css` | The vanilla-JS dashboard: a section-grouped editable grid + a live Gantt-style timeline that auto-solves on edit. |
-| `examples/lake.json` | A hand-written IR so you can exercise `/solve` with no AI running. |
+| `app.py` | Flask routes: `/` (dashboard), `/solve` (JSON → schedule), `/example[/<name>]` + `/examples` (demo IR). `/parse` is kept but dormant. |
+| `models.py` | The IR as Pydantic types — the JSON contract shared by the dashboard and the solver. |
+| `solver.py` | The CP-SAT core: turns a `Scenario` into a solver model and solves it. |
+| `parse.py` | **Dormant** — the AI path; calls Ollama to turn a sentence into a `Scenario`. |
+| `templates/`, `static/` | The vanilla-JS dashboard: an editable grid + a live Gantt timeline. |
+| `examples/lake.json` | A hand-written IR so you can test `/solve` with no AI running. |
 
-### The routes
+```mermaid
+flowchart LR
+    U(["You"]) -->|edit activities| FE["Dashboard<br/>grid + timeline (app.js)"]
+    FE -->|"edit (debounced)"| SOLVE["/solve (CP-SAT)"]
+    SOLVE -->|schedule| FE
+    FE -->|"Load example"| EXAMPLE["/example"]
+    EXAMPLE -->|demo IR| FE
+```
 
-- **`GET /`** — serves `index.html`, the dashboard.
-- **`POST /solve`** — body is a full IR (the edited JSON). Validates it against `models.Scenario`,
-  runs `solve()`, returns `{"status": ..., "schedule": [...]}`. The dashboard calls this
-  automatically (debounced) on every edit.
-- **`GET /example[/<name>]`** — returns a hand-written demo IR (default `examples/lake.json`), so
-  "Load example" works with no AI involved; `GET /examples` lists them.
-- **`POST /parse`** — *dormant.* Body `{"sentence": "..."}` → a local Ollama model would draft the
-  IR. The AI path, off for the MVP (the only route that would need Ollama running).
+`static/app.js` holds the IR in one in-memory object and renders it as a section-grouped grid.
+Edit a field and a short debounce later it POSTs the whole IR to `/solve`, then draws each
+scheduled activity as a bar on the timeline (one lane per section). If an edit makes the schedule
+INFEASIBLE, the last good timeline stays on screen (dimmed) with a "that broke it" banner, so the
+centerpiece never just vanishes.
 
 ### The IR (`models.py`)
 
 The IR is two lists — `activities` and `constraints` — plus an optional `day` window.
 
-- An **`Activity`** is an `id`, a `duration` in minutes, and an optional **`section`** (free text,
-  e.g. `"Deli"`), like `{"id": "sail", "duration": 120, "section": "Lake"}`. Activities sharing a
-  section are automatically serialized — they can't overlap (each section is one resource).
-- A **`Constraint`** is one of five typed variants, picked by its `type` field (Pydantic calls
-  this a *discriminated union* — it reads `type` to know which shape to expect):
+- An **`Activity`** is an `id`, a `duration` in minutes, and an optional **`section`**, e.g.
+  `{"id": "sail", "duration": 120, "section": "Lake"}`. Activities sharing a section can't overlap.
+- A **`Constraint`** has a `type` field saying which of five kinds it is:
   - `time_window` — an `earliest` start and/or `latest_end` for one activity.
   - `no_overlap` — a set of activities (or `"all"`) that can't run at the same time.
   - `precedence` — one activity must finish before another starts.
-  - `sequence` — an ordered list of activities where each one finishes before the next starts. It's
-    just `precedence` generalized to a whole chain: N activities expand to N−1 adjacent precedences,
-    so "first A, then B, finally C" is one rule instead of several pairwise ones.
-  - `conditional` — a `when` / `then` rule, e.g. *when* kiteboard is absent, *then* set sail's
-    duration ×2.
-
-Every constraint also carries `enabled` (a toggle so you can switch a rule off without deleting
-its numbers), `label` (a human title), and `source` (the phrase it came from). Each constraint
-`type` maps almost 1:1 to a CP-SAT call in `solver.py`.
-
-The Scenario also has an optional **`day`** window — a `DayWindow` with a `start` and `end`
-(both `"HH:MM"`), e.g. `{"start": "08:00", "end": "22:00"}`. Unlike a `time_window` (which limits
-one activity), the day window bounds **every** activity to that span and anchors the schedule to
-the day's start, so it packs from there. Omit `day` entirely and activities are free across the
-full 0–24h day.
-
-### How it flows
-
-```mermaid
-flowchart LR
-    U(["Mission manager"]) -->|enter / edit activities| FE["Dashboard<br/>grid + live timeline (app.js)"]
-
-    subgraph FLASK["Flask app (app.py)"]
-        direction TB
-        SOLVE["/solve<br/>(CP-SAT)"]
-        EXAMPLE["/example"]
-        IR["models.py<br/>(IR contract)"]
-        PARSE["/parse<br/>(dormant)"]
-    end
-
-    FE -->|"edit (debounced)"| SOLVE
-    SOLVE -->|schedule| FE
-    FE -->|"Load example"| EXAMPLE
-    EXAMPLE -->|demo IR| FE
-    IR -.validates.-> SOLVE
-```
-
-On the front end, `static/app.js` holds the IR in one in-memory object and renders it as a
-section-grouped editable grid. When you change a field, you're editing that JSON in place — and a
-short debounce later it POSTs the whole IR to `/solve` and redraws each scheduled activity as a
-positioned bar on the timeline, grouped into one lane per section. If a change makes the schedule
-INFEASIBLE, the last good timeline stays on screen (dimmed) with a "that change broke it" banner,
-so the centerpiece never just vanishes.
+  - `sequence` — an ordered list where each step finishes before the next. A 3-step sequence is
+    just 2 "before" rules behind the scenes (A before B, B before C).
+  - `conditional` — a `when`/`then` rule, e.g. *when* kiteboard is absent, *then* double sail.
+- Every constraint also carries `enabled` (a toggle to switch it off without deleting it), `label`
+  (a title), and `source` (the phrase it came from).
+- The optional **`day`** window (`{"start": "08:00", "end": "22:00"}`) bounds *every* activity to
+  that span and anchors the schedule to the start. Omit it and activities are free across 0–24h.
 
 ---
 
-## 3. How CP-SAT actually works (taught with the lake example)
+## 3. How the solver maps the IR
 
-This is the part worth slowing down for. We'll use the concrete numbers from
-`examples/lake.json` throughout.
+`solver.py` turns each activity into two integer variables — a **start** and **end**, in minutes
+from midnight (0–1440) — tied together by an **interval variable** so `start + duration = end`.
+Each constraint type then maps to a CP-SAT call:
 
-### What a constraint solver even is
+| IR constraint | CP-SAT call |
+| --- | --- |
+| `time_window` | `add(start >= earliest)` / `add(end <= latest)` |
+| `no_overlap` (and each `section`) | `add_no_overlap([intervals])` |
+| `precedence` | `add(end_a <= start_b)` |
+| `sequence` | one `add(end <= start)` per adjacent pair |
+| `conditional` — optional activity | an optional interval + a presence bool; it only takes up space when present |
+| `conditional` — duration change | the size is a variable, fixed with `.only_enforce_if(present)` |
 
-Normal code computes an answer step by step: you tell it *how*. A constraint solver flips this
-around: you describe *what a valid answer looks like* — the rules it must obey — and the solver
-searches for values that satisfy all of them at once. You never write the search; CP-SAT does it.
+The **objective** maximizes `(DAY + 1) * (activities kept) - span`, so the solver keeps as many
+optional activities as possible first, then packs them tightly (`span` = latest end − earliest start).
 
-**CP-SAT** is the solver from Google OR-Tools. "CP" is *constraint programming*; "SAT" is the
-*satisfiability* engine underneath it. You hand it variables and constraints; it returns an
-assignment of values that makes everything true, or tells you that's impossible.
+`solve()` returns a status:
 
-Three things you give it:
+- **OPTIMAL** — found the best valid schedule.
+- **INFEASIBLE** — no schedule can satisfy all enabled rules (a proof, not a guess).
+- **UNKNOWN** — neither found nor disproved (won't happen on problems this small).
 
-- **Decision variables** — the unknowns the solver gets to choose. Here: when each activity
-  starts and ends.
-- **Constraints** — rules those variables must obey (no overlaps, deadlines, ordering, …).
-- An **objective** (optional) — a number to make as large or small as possible, used to pick the
-  *best* valid answer among many.
-
-### Time is just integers
-
-The whole day is modeled as **minutes from midnight**, `0` to `1440` (24 × 60). So `08:00` is
-`480`, `21:00` is `1260`, `22:00` is `1320`. `solver.py` has a tiny `_to_minutes()` helper that
-does this conversion. Working in plain integers is exactly what CP-SAT likes.
-
-### Decision variables: start and end times
-
-For each activity, `solver.py` creates two integer **decision variables** — a start and an end,
-each allowed to be anywhere from 0 to 1440:
-
-```python
-starts[aid] = model.new_int_var(0, DAY, f"start_{aid}")
-ends[aid]   = model.new_int_var(0, DAY, f"end_{aid}")
-```
-
-So for `sail` the solver must pick a `start_sail` and an `end_sail`. It doesn't know them yet —
-that's the whole point. The constraints will pin them down.
-
-### Interval variables: an activity as a block of time
-
-An activity isn't two loose numbers — it's a *block* with a duration. CP-SAT has a purpose-built
-type for this, the **interval variable**, which ties together start, size (duration), and end so
-that `start + size = end` always holds:
-
-```python
-interval = model.new_interval_var(starts[aid], duration, ends[aid], f"iv_{aid}")
-```
-
-For `sail` the duration is 120, so its interval is a 2-hour block; wherever its start lands, the
-end is automatically 120 minutes later. Intervals are what the scheduling constraints below
-operate on.
-
-### no_overlap: one thing at a time
-
-The lake scenario has a `no_overlap` constraint over `"all"` activities (`c3`, "One thing at a
-time"). In CP-SAT that's literally one call:
-
-```python
-model.add_no_overlap(list(intervals.values()))
-```
-
-This tells the solver: none of these time blocks may overlap. You can't be driving and sailing
-at the same minute. The solver now has to *space the blocks out* across the day. It figures out
-the arrangement; you just stated the rule.
-
-*Sections use this exact mechanism.* In the manual what-if MVP, every activity you put in the same
-`section` (say `"Deli"`) is automatically gathered into one `add_no_overlap`, so a section behaves
-like a single worker/station that can only do one thing at a time.
-
-### precedence: do this before that
-
-Constraint `c4` says drive_to_lake must come before sail. A precedence rule is just an inequality
-between an end and a start:
-
-```python
-model.add(ends["drive_to_lake"] <= starts["sail"])
-```
-
-"The drive ends no later than sailing begins." Combined with `no_overlap`, the solver now knows
-the drive must fully precede the sail.
-
-A `sequence` constraint is just this same inequality applied down a whole chain: for ordered
-`activities` it emits one `ends[a] <= starts[b]` per adjacent pair, so an N-step routine becomes
-N−1 of these. Nothing new for the solver — it's a convenience for ordering phrasing like
-"first coffee, then shower, then commute."
-
-### time_window: earliest starts and deadlines
-
-Two time windows in the example:
-
-- `c1`: drive_to_lake `earliest` `08:00` → `model.add(starts["drive_to_lake"] >= 480)`.
-- `c2`: drive_home `latest_end` `22:00` → `model.add(ends["drive_home"] <= 1320)`.
-
-These are plain bounds on the start/end variables. Note the design choice in the code: these
-bounds apply *per activity*, not to a shared global "day," so one activity's window never
-silently constrains another.
-
-### Conditional constraints and only_enforce_if (reification)
-
-Here's where it gets interesting. Some rules should only apply *under a condition*. CP-SAT lets
-you attach a boolean to a constraint so it's enforced only when that boolean is true. This is
-called **reification**, and the method is `only_enforce_if`. The pattern is:
-
-```python
-model.add(<some constraint>).only_enforce_if(some_bool)
-```
-
-Read it as: "this rule is active only when `some_bool` is true." That single mechanism powers the
-next two features.
-
-### Optional activities and presence (kiteboard may be dropped)
-
-The sentence says "**maybe** kiteboard." So kiteboard is **optional** — the solver may choose to
-include it or leave it out. The way you express "this activity might not happen" is a **presence
-variable**: a boolean that's true if the activity is in the schedule, false if it's dropped.
-
-`solver.py` notices kiteboard is optional (it appears as the `when.activity` of the conditional)
-and builds it as an **optional interval** governed by a presence boolean:
-
-```python
-present = model.new_bool_var("present_kiteboard")
-interval = model.new_optional_interval_var(
-    starts["kiteboard"], 120, ends["kiteboard"], present, "iv_kiteboard"
-)
-```
-
-An optional interval only "takes up space" (e.g. for `no_overlap`) when its presence boolean is
-true. If the solver sets `present_kiteboard = false`, kiteboard vanishes from the schedule and
-its start/end become meaningless — which is why, when reading results back out, the code skips
-any optional activity whose presence came back false.
-
-### Conditional duration (sail doubles)
-
-Constraint `c5` is the fun one: *if* kiteboard is absent, sail twice as long. So sail's duration
-is no longer fixed — it's **120 if kiteboard happens, 240 if it doesn't**. The solver handles a
-variable-length block by making the *size* itself a decision variable, then using reification to
-tie that size to kiteboard's presence:
-
-```python
-size = model.new_int_var(120, 240, "size_sail")          # somewhere in [base, doubled]
-model.add(size == 240).only_enforce_if(present_kiteboard.Not())  # no kite -> 240
-model.add(size == 120).only_enforce_if(present_kiteboard)        # kite     -> 120
-interval = model.new_interval_var(starts["sail"], size, ends["sail"], "iv_sail")
-```
-
-(`present_kiteboard.Not()` is just "kiteboard is absent.") Now sail's block automatically grows
-to 4 hours in the branch where kiteboard is dropped, and stays 2 hours otherwise. The conditional
-in the IR became two reified equalities in CP-SAT.
-
-### The objective: pick the *best* valid schedule
-
-Many schedules satisfy all the rules. Which should the solver return? The objective expresses our
-preference, in two priorities (this is called a **lexicographic** objective — first goal first,
-second goal only as a tie-breaker):
-
-1. **Schedule as many optional activities as possible.** A fuller day is the better demo, so
-   keeping kiteboard beats dropping it.
-2. **Then make the schedule compact.** Among schedules with the same number of activities, prefer
-   the one where activities cluster together instead of drifting into empty hours. "Compact" is
-   measured as the **span**: latest end minus earliest start.
-
-The code combines both into one number to maximize, weighting presence so heavily that one extra
-activity always beats any span saving:
-
-```python
-model.maximize((DAY + 1) * sum(presence.values()) - span)
-```
-
-The `(DAY + 1)` multiplier is the lexicographic trick: because the span can never exceed 1440,
-gaining one present activity (worth 1441) always outweighs any possible span change. So the solver
-keeps kiteboard *and then* packs everything tightly. (Optional activities that get dropped are
-neutralized so they don't artificially widen the span — see the `effstart`/`effend` handling.)
-
-### What you get back: OPTIMAL vs INFEASIBLE
-
-After `solver.solve(model)`, the status tells you what happened:
-
-- **OPTIMAL** — the solver found a valid schedule *and* proved it's the best one under the
-  objective. You get back each present activity's start and end.
-- **INFEASIBLE** — there is *no* assignment of start/end times that satisfies all the enabled
-  rules. Not "I gave up" — a proof that it's impossible. This is the honest failure mode: better
-  to say "your rules can't all hold" than to hand you a plan that breaks one.
-- **UNKNOWN** — the catch-all if the solver neither found nor disproved a solution (you won't hit
-  this on problems this small).
-
-Running the lake example today returns **OPTIMAL** with both sail and kiteboard kept (kiteboard
-is present, so sail stays at 120 minutes), everything packed between roughly 13:00 and 21:00 and
-home before the 22:00 deadline. If you instead force the drive to start no earlier than `21:00`
-while still requiring home by `22:00`, there's no way to fit a 90-minute drive, the whole lake
-trip, and a 90-minute drive home into that one hour — so the solver returns **INFEASIBLE**.
-Those two outcomes are exactly the smoke tests below.
+The lake example returns **OPTIMAL**. Force the drive to start no earlier than `21:00` while still
+requiring home by `22:00`, and it returns **INFEASIBLE** — those are the two smoke tests below.
 
 ---
 
-## 4. How to run it and how to test
+## 4. Run and test
 
 ### Run it
 
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-ollama pull granite4.1:8b       # one-time; install Ollama from ollama.com first (only needed for /parse)
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-Open the dashboard, click **Load example** (no AI needed) and edit away — the timeline updates as
-you change things. (The sentence-parsing path is dormant; re-enabling `/parse` is the only thing
-that would need a running local Ollama model.)
+Open the dashboard, click **Load example** (no AI needed), and edit — the timeline updates live.
+(Re-enabling `/parse` is the only thing that needs a local Ollama model: `ollama pull granite4.1:8b`.)
 
 ### Test it (two smoke tests)
 
-The two smoke tests mirror the two outcomes above. The simplest way to run them is to feed the IR
-straight through `solve()` without the web layer:
-
-**1. The example must solve.** `examples/lake.json` must return `OPTIMAL`:
+The two tests mirror the two outcomes above. Run them straight through `solve()`, no web layer:
 
 ```powershell
+# 1. The example must solve -> OPTIMAL
 .\.venv\Scripts\python.exe -c "import json; from models import Scenario; from solver import solve; print(solve(Scenario.model_validate(json.load(open('examples/lake.json'))))['status'])"
-# -> OPTIMAL
-```
 
-**2. The impossible case must be caught.** Set drive_to_lake's `earliest` to `21:00` while
-drive_home's `latest_end` stays `22:00`; `/solve` must return `INFEASIBLE`. This is the real test
-that constraint handling works — if a rule were silently dropped, this would wrongly come back
-OPTIMAL. You can edit `c1.earliest` to `"21:00"` in the dashboard and click Solve, or in code:
-
-```powershell
+# 2. The impossible case must be caught -> INFEASIBLE
 .\.venv\Scripts\python.exe -c "import json; from models import Scenario; from solver import solve; d=json.load(open('examples/lake.json')); [c.__setitem__('earliest','21:00') for c in d['constraints'] if c['id']=='c1']; print(solve(Scenario.model_validate(d))['status'])"
-# -> INFEASIBLE
 ```
 
 If both come back as expected, constraint handling is sound end to end.

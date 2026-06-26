@@ -1,10 +1,12 @@
 # CP-SAT-PROJECT
 
-A hands-on **"what-if" schedule planner**. You enter activities by hand into a spreadsheet-style
-grid, grouped into **sections** (like Deli, Cheese, FrontDesk — your departments or stations). A
-**live timeline** is the centerpiece: change one thing — shorten a break, add a second cleaning —
-and the timeline redraws by itself so you can see whether everything still fits or the plan falls
-apart. Powered by **CP-SAT** (Google OR-Tools). One local Flask app, Python only. Portfolio project.
+A hands-on "what-if" schedule planner. You type activities into a spreadsheet-style grid and a
+live timeline shows whether the day still fits. Change one thing — shorten a break, add a second
+cleaning — and the timeline redraws by itself, so you can see right away if the plan holds or breaks.
+
+Activities are grouped into **sections** (like Deli, Cheese, FrontDesk — your departments or
+stations). The schedule is solved by **CP-SAT** (Google OR-Tools). It's one local Flask app,
+Python only — a portfolio project.
 
 New to constraint solving? See [ARCHITECTURE.md](ARCHITECTURE.md) for a plain-language tour of the
 app and how CP-SAT works.
@@ -14,15 +16,29 @@ app and how CP-SAT works.
 
 ## Status
 
-The **engine is already built**; the manual what-if UI is being built on top of it.
+The engine is already built. The manual what-if UI is being built on top of it.
 
-- **Done:** the single-day CP-SAT solver, the editable JSON IR, the 5 constraint types, the
-  timeline (Gantt), the example scenarios, and live editing of the rules.
-- **Building now (the MVP):** activities grouped into **sections** that act as one-at-a-time
-  resources; an **Excel-style grid** to enter them; **live auto-solve** as you edit; keep the
-  **last good timeline (dimmed)** when a change breaks it; and a small **slack readout** ("how much
-  room is left in the day").
-- **Shelved — kept, not deleted:** AI / sentence parsing (Ollama), multi-day scheduling, `.docx` import.
+**Done:**
+
+- The single-day CP-SAT solver.
+- The editable JSON IR and its 5 constraint types.
+- The timeline (Gantt chart).
+- The example scenarios.
+- Live editing of the rules.
+
+**Building now (the MVP):**
+
+- Activities grouped into sections, where each section can do one thing at a time.
+- An Excel-style grid to enter them.
+- Live auto-solve as you edit.
+- Keep the last good timeline (dimmed) when a change breaks it.
+- A small slack readout — how much room is left in the day.
+
+**Paused (kept, not deleted):**
+
+- AI sentence parsing (Ollama).
+- Multi-day scheduling.
+- `.docx` import.
 
 ## How it works
 
@@ -33,14 +49,16 @@ You build the plan by hand — no AI, no typing sentences:
    activities in the same section can't overlap.
 3. Add rules as needed: deadlines and earliest-starts (`time_window`), ordering (`precedence` /
    `sequence`), "one thing at a time" (`no_overlap`), and conditionals.
-4. The **timeline redraws live** as you edit. Green = it all fits (**OPTIMAL**). Red = your rules
-   can't all hold (**INFEASIBLE**) — and the last good timeline stays on screen, dimmed, with a
-   "that change broke it" note, so the thing you're reasoning about never just vanishes.
+4. The timeline redraws live as you edit. Green means it fits (**OPTIMAL**). Red means the rules
+   clash (**INFEASIBLE**). When it goes red, the last working timeline stays on screen, dimmed,
+   with a "that change broke it" note — so you never lose the plan you were reasoning about.
 
-No database, no build step, no npm. One Flask app serves the dashboard (`/`) plus two JSON
-endpoints: **`/solve`** (IR → schedule via CP-SAT) and **`/example[/<name>]`** (hand-written demo
-scenarios, with `/examples` listing them). The old sentence-to-JSON route `/parse` is kept but
-**dormant** (AI is off for now).
+No database, no build step, no npm. One Flask app serves the dashboard (`/`) plus these JSON
+endpoints:
+
+- **`/solve`** — takes the IR and returns a schedule from CP-SAT.
+- **`/example[/<name>]`** — returns a hand-written demo scenario; `/examples` lists them.
+- **`/parse`** — the old sentence-to-JSON route, kept but **dormant** (AI is off for now).
 
 ```mermaid
 flowchart LR
@@ -121,6 +139,9 @@ day's span and anchors the schedule to its start; omit it and activities run fre
   ]
 }
 ```
+
+In the `conditional` above, `factor: 2` means double the activity's duration, and
+`present: false` means "when kiteboard is left out of the schedule."
 
 ## Setup & run
 

@@ -48,20 +48,14 @@ body {
 
 .dash {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) 1fr;
+  grid-template-columns: minmax(240px, 300px) 1fr minmax(260px, 320px);
   gap: 1rem;
-  align-items: start;          /* each column is as tall as its own content */
+  align-items: start;          /* each column is top-aligned to its own content */
 }
-.col-left { margin: 0; }
-.col-right {                   /* timeline stays pinned while you scroll the controls */
-  margin: 0;
-  position: sticky;
-  top: 1rem;
-}
+.dash > .panel { margin: 0; }
 
-@media (max-width: 820px) {
+@media (max-width: 900px) {
   .dash { grid-template-columns: 1fr; }
-  .col-right { position: static; }
 }
 
 /* panels */
@@ -72,15 +66,6 @@ body {
   box-shadow: var(--shadow);
   padding: 1rem 1.1rem;
   margin-bottom: 1.1rem;
-}
-.lbl {
-  display: block;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 0.4rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 /* inputs */
@@ -100,9 +85,6 @@ select:focus {
   border-color: var(--accent);
 }
 
-.row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; flex-wrap: wrap; }
-.row-sep { color: var(--muted); font-size: 0.85rem; }
-
 /* buttons */
 .btn {
   font: inherit;
@@ -110,6 +92,7 @@ select:focus {
   border-radius: 8px;
   padding: 0.5rem 0.9rem;
   cursor: pointer;
+  white-space: nowrap;
   background: #e7ebf2;
   color: var(--ink);
 }
@@ -119,7 +102,6 @@ select:focus {
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--muted); }
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.85rem; }
-.btn-solve { margin-top: 1rem; width: 100%; font-weight: 600; }
 
 .select {
   font: inherit;
@@ -135,11 +117,13 @@ select:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
   margin: 1.1rem 0 0.5rem;
 }
 .board-head:first-child { margin-top: 0; }
 .board-head h2 { font-size: 0.95rem; margin: 0; }
-.add-constraint { display: flex; gap: 0.4rem; }
+.add-constraint { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
 /* cards */
 .card {
@@ -149,7 +133,6 @@ select:focus {
   margin: 0.5rem 0;
   background: var(--surface);
 }
-.card.activity { border-left: 3px solid var(--accent); }
 .card.constraint { background: #fbfcfe; }
 .card.off { opacity: 0.5; }
 .card-head { display: flex; align-items: center; gap: 0.5rem; }
@@ -164,7 +147,6 @@ select:focus {
   min-width: 0;
 }
 .card-head .card-title:hover { border-color: var(--border); }
-.swatch { width: 0.8rem; height: 0.8rem; border-radius: 3px; flex: 0 0 auto; }
 .del {
   margin-left: auto;
   border: none;
@@ -176,18 +158,6 @@ select:focus {
   padding: 0 0.3rem;
 }
 .del:hover { color: var(--bad); }
-
-/* activity grid (Excel look) */
-.section-head { display: flex; align-items: center; justify-content: space-between; margin: 0.9rem 0 0.3rem; }
-.section-title { font-size: 0.82rem; margin: 0; color: var(--ink); }
-.grid { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-bottom: 0.5rem; }
-.grid th, .grid td { border: 1px solid var(--border); padding: 0.25rem 0.4rem; text-align: left; }
-.grid th { font-size: 0.7rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; background: #fbfcfe; }
-.grid td input { font: inherit; padding: 0.25rem 0.4rem; border: 1px solid var(--border); border-radius: 6px; width: 100%; }
-.grid td input[type="number"] { font-variant-numeric: tabular-nums; }
-.grid .field { margin-top: 0; gap: 0; }
-.grid .field-lbl { display: none; }
-.grid-del { text-align: center; width: 1px; }
 
 .badge {
   font-size: 0.66rem;
@@ -247,8 +217,14 @@ select:focus {
 }
 
 /* result */
-.result-head { display: flex; align-items: center; justify-content: space-between; }
+.result-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
 .result-head h2 { font-size: 0.95rem; margin: 0; }
+.result-actions { display: flex; align-items: center; gap: 0.5rem; }
+
+/* legend: which color means which activity type */
+.legend { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--muted); }
+.legend-item { display: flex; align-items: center; gap: 0.3rem; }
+.legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 3px; flex: 0 0 auto; }
 .pill { font-size: 0.78rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 999px; }
 .pill-ok { background: var(--ok-bg); color: var(--ok); }
 .pill-bad { background: var(--bad-bg); color: var(--bad); }
@@ -274,8 +250,8 @@ select:focus {
 .gantt-stale { opacity: 0.4; filter: grayscale(0.6); }
 .gantt-row { display: flex; align-items: center; margin: 2px 0; }
 .gantt-label {
-  flex: 0 0 110px;
-  width: 110px;
+  flex: 0 0 128px;
+  width: 128px;
   text-align: right;
   padding-right: 0.6rem;
   color: var(--muted);
@@ -309,8 +285,10 @@ select:focus {
   box-shadow: var(--shadow);
 }
 .bar-time { font-size: 0.68rem; opacity: 0.95; }
-/* "tight" bars: ending within ~15 min (snug) or ~5 min (tight) of their deadline.
-   Inline background stays the activity color; a ring + stripe flags the squeeze. */
+/* the bar the user clicked to inspect */
+.bar.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Bars that finish close to their deadline: within ~15 min (snug) or ~5 min (tight).
+   We keep the bar's own color and just add a colored outline (plus stripes when very tight). */
 .bar-snug { outline: 2px solid var(--warn); outline-offset: -2px; }
 .bar-tight {
   outline: 2px solid var(--bad);
@@ -320,16 +298,116 @@ select:focus {
   );
 }
 
-/* day-slack + per-deadline readout, above the timeline */
-.slack {
-  margin-bottom: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
 @media (max-width: 560px) {
   .gantt-label { flex-basis: 70px; width: 70px; }
   .field { flex-wrap: wrap; }
   .field-lbl { flex-basis: 100%; }
 }
+
+/* health strip: the 2-second glance */
+.health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.1rem;
+  padding: 0.55rem 0.9rem;
+  margin-bottom: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 0.9rem;
+}
+.health-pill { font-weight: 700; padding: 0.15rem 0.6rem; border-radius: 999px; }
+.health-ok { background: var(--ok-bg); color: var(--ok); }
+.health-bad { background: var(--bad-bg); color: var(--bad); }
+.health-warn { background: var(--warn-bg); color: var(--warn); }
+.health-stat { color: var(--ink); font-variant-numeric: tabular-nums; }
+.health-note { color: var(--muted); font-style: italic; }
+
+/* section rows in the timeline (click a section header to collapse or expand it) */
+.gantt-section { margin-top: 0.15rem; }
+.gantt-section .gantt-label {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+  padding-right: 0.4rem;
+}
+.gantt-section .gantt-label:hover { color: var(--accent); }
+.sec-caret { color: var(--muted); width: 0.8rem; flex: 0 0 auto; }
+.sec-name { overflow: hidden; text-overflow: ellipsis; }
+.sec-count { color: var(--muted); font-weight: 500; font-size: 0.75rem; }
+.sec-warn { color: var(--bad); }
+.bar-summary { background: var(--muted); }
+.gantt-activity .gantt-label { color: var(--muted); font-weight: 400; }
+
+/* inspector (right): label + input rows for the selected activity */
+.insp-title { font-size: 0.95rem; margin: 0 0 0.6rem; }
+.insp-hint { color: var(--muted); font-style: italic; font-size: 0.88rem; margin: 0; }
+.col-insp .field { flex-wrap: wrap; }
+.col-insp .field-lbl { flex-basis: 100%; flex-grow: 0; margin-bottom: 0.15rem; }
+.col-insp .field input,
+.col-insp .field select { width: 100%; }
+.col-insp .field input[type="number"] { width: 100%; }
+.insp-solved {
+  margin-top: 0.7rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.insp-delete {
+  margin: 0.9rem 0 0;
+  width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  background: var(--surface);
+}
+.insp-delete:hover { background: var(--bad-bg); color: var(--bad); border-color: #fecaca; }
+
+/* library palette (left): clickable activity templates you add to the plan */
+#lib-templates { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.6rem; }
+.lib-item {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  font: inherit; text-align: left; cursor: pointer; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.4rem 0.55rem;
+}
+.lib-item:hover { border-color: var(--accent); background: #f8faff; }
+.lib-add { color: var(--accent); font-weight: 700; flex: 0 0 auto; }
+.lib-label { flex: 1; font-weight: 600; }
+.lib-cat {
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--muted); background: var(--track); border-radius: 999px; padding: 0.1rem 0.4rem;
+}
+.lib-dur { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 2.2rem; text-align: right; }
+
+/* saved-plan tabs ("missions") across the top */
+.tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.tab {
+  display: flex; align-items: center; gap: 0.15rem;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: 8px; padding: 0.2rem 0.3rem 0.2rem 0.6rem;
+}
+.tab.active { border-color: var(--accent); background: #eef2ff; }
+.tab-name {
+  font: inherit; font-size: 0.88rem; background: transparent; border: none;
+  cursor: pointer; color: var(--ink); padding: 0.15rem 0;
+}
+.tab.active .tab-name { font-weight: 600; color: var(--accent); }
+.tab-close {
+  font-size: 1rem; line-height: 1; background: transparent; border: none;
+  cursor: pointer; color: var(--muted); padding: 0 0.25rem;
+}
+.tab-close:hover { color: var(--bad); }
+.tab-add {
+  font: inherit; background: transparent; border: 1px dashed var(--border);
+  border-radius: 8px; cursor: pointer; color: var(--muted); padding: 0.3rem 0.6rem;
+}
+.tab-add:hover { border-color: var(--accent); color: var(--accent); }

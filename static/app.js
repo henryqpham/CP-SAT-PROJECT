@@ -1,8 +1,22 @@
-// Dashboard: sentence -> /parse (or Load example) -> editable cards -> /solve -> 24h timeline.
+// Dashboard: load an example (or parse a sentence) -> edit the cards -> /solve -> draw the timeline.
 let scenario = { activities: [], constraints: [] };
-// Last schedule that solved successfully; kept so an INFEASIBLE edit can show the
-// last-good timeline (dimmed) instead of blanking the Gantt.
+// The last schedule that solved. If a later edit makes things INFEASIBLE we show this one
+// (dimmed) instead of an empty timeline.
 let lastFeasibleSchedule = null;
+// Section names the user has clicked shut in the timeline. Sections start open.
+const collapsed = new Set();
+// The schedule currently drawn, so we can redraw (e.g. when a section is toggled) without re-solving.
+let shownSchedule = null;
+let shownStale = false;
+// The id of the activity the user clicked in the timeline. The Inspector panel edits this one.
+let selectedId = null;
+// Timeline view: false = Lanes (per-section), true = Overview (lanes collapsed to summary bars).
+let overview = false;
+// Saved plans ("missions"): each tab is { name, scenario }. The active tab's scenario is the live one.
+let tabs = [];
+let activeTab = 0;
+const TABS_KEY = "planner.tabs.v1";
+const clone = (x) => JSON.parse(JSON.stringify(x));
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
@@ -10,8 +24,17 @@ const COLORS = [
   "#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777",
   "#7c3aed", "#ca8a04", "#0d9488", "#2563eb", "#dc2626",
 ];
+// Activity types -> bar color + legend label. An activity with no type falls back to a
+// distinct per-activity color, so untyped examples still read clearly.
+const TYPES = {
+  REST: { label: "Rest", color: "#2563eb" },
+  CREW: { label: "Crew", color: "#16a34a" },
+  OPS: { label: "Ops", color: "#ea580c" },
+};
 const colorFor = (id) => {
-  const i = scenario.activities.findIndex((a) => a.id === id);
+  const a = scenario.activities.find((x) => x.id === id);
+  if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
+  const i = scenario.activities.findIndex((x) => x.id === id);
   return COLORS[(i < 0 ? 0 : i) % COLORS.length];
 };
 
@@ -33,6 +56,8 @@ $("example-select").onchange = async (e) => {
   clearAlert();
   try {
     scenario = await getJSON(`/example/${name}`);
+    selectedId = null;
+    saveTabs(); // load the example into the active plan
     render();
   } catch (err) {
     showAlert(err.message);
@@ -40,10 +65,12 @@ $("example-select").onchange = async (e) => {
 };
 
 $("solve-btn").onclick = () => solveNow();
+$("view-toggle").onclick = () => setView(!overview);
 
 // Solve the current in-memory scenario and draw the timeline. Reused by the
 // manual "Solve now" button and by the debounced live auto-solve below.
 function solveNow() {
+  saveTabs(); // persist the current plan into its tab before solving
   return withBusy($("solve-btn"), "Solving…", async () => {
     renderResult(await post("/solve", scenario));
   });
@@ -57,30 +84,122 @@ function scheduleSolve() {
   solveTimer = setTimeout(() => solveNow(), 250);
 }
 
-$("add-activity").onclick = () => {
-  scenario.activities.push({ id: uniqueActivityId(), duration: 30 });
-  render();
-};
-
 $("add-constraint").onclick = () => {
   scenario.constraints.push(newConstraint($("add-constraint-type").value));
   render();
 };
 
-// Ctrl/Cmd+Enter parses from the textarea (dormant AI path).
+// Ctrl/Cmd+Enter parses from the text box (the AI input is hidden for now, but still wired up).
 $("sentence").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("parse-btn").click();
 });
 
-// Start with an example loaded so the dashboard isn't empty on open.
+// On open: restore the saved plans, or start one from the lake example.
 (async () => {
-  try {
-    scenario = await getJSON("/example/lake");
-    render();
-  } catch {
-    /* no example available — leave the board empty */
+  if (loadTabs()) {
+    scenario = clone(tabs[activeTab].scenario);
+  } else {
+    try {
+      scenario = await getJSON("/example/lake");
+    } catch {
+      scenario = { activities: [], constraints: [] };
+    }
+    tabs = [{ name: "Lake day", scenario: clone(scenario) }];
+    activeTab = 0;
+    saveTabs();
   }
+  renderTabs();
+  render();
 })();
+
+// ---- tabs (saved plans, kept in the browser) ---------------------------
+// Snapshot the live plan into the active tab and persist all tabs to localStorage.
+function saveTabs() {
+  if (tabs[activeTab]) tabs[activeTab].scenario = clone(scenario);
+  try {
+    localStorage.setItem(TABS_KEY, JSON.stringify({ tabs, activeTab }));
+  } catch {
+    /* storage unavailable — skip persistence */
+  }
+}
+// Restore tabs from localStorage; returns false if there's nothing saved.
+function loadTabs() {
+  try {
+    const data = JSON.parse(localStorage.getItem(TABS_KEY));
+    if (!data || !Array.isArray(data.tabs) || !data.tabs.length) return false;
+    tabs = data.tabs;
+    activeTab = Math.min(Math.max(0, data.activeTab | 0), tabs.length - 1);
+    return true;
+  } catch {
+    return false;
+  }
+}
+// Draw the tab strip: a chip per plan (click to open, double-click to rename, × to delete) + "+".
+function renderTabs() {
+  const bar = $("tabs");
+  if (!bar) return;
+  bar.innerHTML = "";
+  tabs.forEach((t, i) => {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (i === activeTab ? " active" : "");
+    const name = makeEl("button", t.name, "tab-name");
+    name.type = "button";
+    name.title = "Click to open · double-click to rename";
+    name.onclick = () => switchTab(i);
+    name.ondblclick = () => renameTab(i);
+    tab.append(name);
+    if (tabs.length > 1) {
+      const x = makeEl("button", "×", "tab-close");
+      x.type = "button";
+      x.title = "Delete this plan";
+      x.onclick = (e) => { e.stopPropagation(); deleteTab(i); };
+      tab.append(x);
+    }
+    bar.append(tab);
+  });
+  const add = makeEl("button", "+", "tab-add");
+  add.type = "button";
+  add.title = "New plan";
+  add.onclick = newTab;
+  bar.append(add);
+}
+function switchTab(i) {
+  if (i === activeTab) return;
+  saveTabs(); // keep the current plan's edits
+  activeTab = i;
+  scenario = clone(tabs[i].scenario);
+  selectedId = null;
+  renderTabs();
+  render();
+}
+function newTab() {
+  saveTabs();
+  tabs.push({ name: `Plan ${tabs.length + 1}`, scenario: { activities: [], constraints: [] } });
+  activeTab = tabs.length - 1;
+  scenario = clone(tabs[activeTab].scenario);
+  selectedId = null;
+  saveTabs();
+  renderTabs();
+  render();
+}
+function deleteTab(i) {
+  if (tabs.length <= 1) return; // always keep at least one plan
+  tabs.splice(i, 1);
+  if (i < activeTab || activeTab >= tabs.length) activeTab = Math.max(0, activeTab - 1);
+  scenario = clone(tabs[activeTab].scenario);
+  selectedId = null;
+  saveTabs();
+  renderTabs();
+  render();
+}
+function renameTab(i) {
+  const name = prompt("Rename plan:", tabs[i].name);
+  if (name && name.trim()) {
+    tabs[i].name = name.trim();
+    saveTabs();
+    renderTabs();
+  }
+}
 
 // ---- network ------------------------------------------------------------
 async function getJSON(url) {
@@ -164,11 +283,14 @@ function clearAlert() {
 }
 
 // ---- IR helpers ---------------------------------------------------------
-function uniqueActivityId() {
-  let n = scenario.activities.length + 1;
+// Unique id from a base name (e.g. "sleep" -> sleep, sleep_2, sleep_3…). The bare base
+// is tried first so the first of a kind reads cleanly; collisions get a numeric suffix.
+function uniqueActivityId(base = "activity") {
+  if (!scenario.activities.some((a) => a.id === base)) return base;
+  let n = 2;
   let id;
   do {
-    id = `activity_${n++}`;
+    id = `${base}_${n++}`;
   } while (scenario.activities.some((a) => a.id === id));
   return id;
 }
@@ -199,8 +321,13 @@ function newConstraint(type) {
     return { ...base, before: a0, after: a1, label: "New precedence" };
   if (type === "no_overlap")
     return { ...base, activities: "all", label: "One thing at a time" };
-  if (type === "sequence")
-    return { ...base, activities: a0 ? (a1 !== a0 ? [a0, a1] : [a0]) : [], label: "New sequence" };
+  if (type === "sequence") {
+    // Seed the steps with the first two activities (or one, or none, depending on what exists).
+    let steps = [];
+    if (a0 && a1 !== a0) steps = [a0, a1];
+    else if (a0) steps = [a0];
+    return { ...base, activities: steps, label: "New sequence" };
+  }
   if (type === "conditional")
     return {
       ...base,
@@ -213,11 +340,54 @@ function newConstraint(type) {
 
 // ---- rendering ----------------------------------------------------------
 function render() {
-  $("board").hidden = false;
+  renderLibrary();
   renderDay();
-  renderActivities();
   renderConstraints();
+  renderInspector();
   scheduleSolve();
+}
+
+// ---- library (activity palette) ----------------------------------------
+// A fixed palette of clickable templates: clicking one appends a new activity with that
+// duration. CP-SAT then places it; the Inspector edits the selected one.
+const LIBRARY = [
+  { label: "Sleep", category: "REST", minutes: 480 },
+  { label: "Meal", category: "CREW", minutes: 60 },
+  { label: "Prep", category: "OPS", minutes: 60 },
+  { label: "Clean", category: "OPS", minutes: 30 },
+  { label: "Restock", category: "CREW", minutes: 45 },
+  { label: "Check", category: "OPS", minutes: 30 },
+  { label: "Training", category: "CREW", minutes: 180 },
+];
+function renderLibrary() {
+  const box = $("lib-templates");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const tpl of LIBRARY) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "lib-item";
+    row.append(makeEl("span", "+", "lib-add"));
+    row.append(makeEl("span", tpl.label, "lib-label"));
+    row.append(makeEl("span", tpl.category, "lib-cat"));
+    row.append(makeEl("span", dur(tpl.minutes), "lib-dur"));
+    row.title = `Add ${tpl.label} (${tpl.category}, ${dur(tpl.minutes)})`;
+    row.onclick = () => {
+      scenario.activities.push({
+        id: uniqueActivityId(slug(tpl.label)),
+        duration: tpl.minutes,
+        section: null,
+        type: tpl.category,
+      });
+      render();
+    };
+    box.append(row);
+  }
+}
+// "Sleep 8h" -> "sleep_8h"-ish: lowercase, non-word -> "_", trimmed; fallback "activity".
+function slug(label) {
+  const s = String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return s || "activity";
 }
 
 function renderDay() {
@@ -235,80 +405,76 @@ function renderDay() {
     render();
   };
   head.append(cb);
-  head.append(el_("strong", "Bound the whole day to a window", "card-title"));
+  head.append(makeEl("strong", "Bound the whole day to a window", "card-title"));
   el.append(head);
   if (scenario.day) {
     el.append(textField("start (HH:MM)", scenario.day.start, (v) => (scenario.day.start = v)));
     el.append(textField("end (HH:MM)", scenario.day.end, (v) => (scenario.day.end = v)));
-    el.append(el_("div", "Every activity must fit inside this window, and the day starts here.", "hint"));
+    el.append(makeEl("div", "Every activity must fit inside this window, and the day starts here.", "hint"));
   }
   box.append(el);
 }
 
-// Excel-style grid: one small <table> per section. Activities keep their global
-// index (for swatch color + splice), so colors stay aligned with the Gantt.
-function renderActivities() {
-  const box = $("activities");
+// Inspector (right panel): edits the activity you clicked on the timeline.
+// If nothing is selected (or the id no longer exists) it just shows a hint.
+// Each field edit changes the activity and re-solves.
+function renderInspector() {
+  const box = $("inspector");
+  if (!box) return;
   box.innerHTML = "";
-  // Group by section in first-seen order; empty/None -> "Ungrouped".
-  const groups = new Map();
-  scenario.activities.forEach((a, i) => {
-    const key = (a.section || "").trim() || "Ungrouped";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ a, i });
-  });
-  if (!groups.size) groups.set("Ungrouped", []);
+  box.append(makeEl("h2", "Inspector", "insp-title"));
 
-  for (const [section, rows] of groups) {
-    const head = document.createElement("div");
-    head.className = "section-head";
-    head.append(el_("h3", section, "section-title"));
-    const add = document.createElement("button");
-    add.className = "btn btn-ghost btn-sm";
-    add.textContent = "+ Activity";
-    add.onclick = () => {
-      scenario.activities.push({
-        id: uniqueActivityId(),
-        duration: 30,
-        section: section === "Ungrouped" ? null : section,
-      });
-      render();
-    };
-    head.append(add);
-    box.append(head);
-
-    const table = document.createElement("table");
-    table.className = "grid";
-    const thead = document.createElement("thead");
-    const hr = document.createElement("tr");
-    for (const h of ["", "id", "duration (min)", "section", ""]) hr.append(el_("th", h));
-    thead.append(hr);
-    table.append(thead);
-
-    const tbody = document.createElement("tbody");
-    for (const { a, i } of rows) {
-      const tr = document.createElement("tr");
-      tr.append(td(swatch(i)));
-      tr.append(td(textInput(a.id, (v) => (a.id = v), "activity id")));
-      tr.append(td(numField("", a.duration, (v) => (a.duration = v))));
-      tr.append(td(textField("", a.section || "", (v) => (a.section = v || null))));
-      const del = td(deleteBtn(() => {
-        scenario.activities.splice(i, 1);
-        render();
-      }));
-      del.className = "grid-del";
-      tr.append(del);
-      tbody.append(tr);
-    }
-    table.append(tbody);
-    box.append(table);
+  const act = selectedId && scenario.activities.find((a) => a.id === selectedId);
+  if (!act) {
+    if (selectedId) selectedId = null; // clear a dangling selection (e.g. deleted activity)
+    box.append(makeEl("p", "Click an activity on the timeline to inspect it.", "insp-hint"));
+    return;
   }
-}
 
-function td(child) {
-  const cell = document.createElement("td");
-  cell.append(child);
-  return cell;
+  // id (editable text). It re-solves on every keystroke. An empty id would break the
+  // schedule, so we ignore a blank and keep the old id.
+  const idField = labeledField("id", textInput(act.id, (v) => {
+    const next = v.trim();
+    if (next) {
+      act.id = next;
+      selectedId = next;
+    }
+  }, "activity id"));
+  box.append(idField);
+
+  // duration (minutes) + section (blank = Ungrouped) — both mutate + re-solve.
+  box.append(numField("duration (min)", act.duration, (v) => {
+    if (!Number.isNaN(v)) act.duration = v;
+  }));
+  box.append(textField("section", act.section || "", (v) => (act.section = v.trim() || null)));
+
+  // type: placeholder select (only "None" for now; later phases add real types).
+  const typeOpts = [{ value: "", label: "None" }].concat(
+    Object.entries(TYPES).map(([v, t]) => ({ value: v, label: t.label }))
+  );
+  box.append(selectField("type", act.type || "", typeOpts, (v) => (act.type = v || null)));
+
+  // Optional read-only solved start–end from the schedule currently drawn.
+  const solved = shownSchedule && shownSchedule.find((s) => s.id === act.id);
+  if (solved) box.append(makeEl("div", `Scheduled ${hhmm(solved.start)}–${hhmm(solved.end)}`, "insp-solved"));
+
+  const del = deleteBtn(() => {
+    const i = scenario.activities.findIndex((a) => a.id === act.id);
+    if (i >= 0) scenario.activities.splice(i, 1);
+    selectedId = null;
+    render();
+  });
+  del.classList.add("insp-delete");
+  del.textContent = "Delete activity";
+  box.append(del);
+}
+// A label-over-input row wrapper for an already-built input element.
+function labeledField(label, inputEl) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.append(makeEl("span", label, "field-lbl"));
+  wrap.append(inputEl);
+  return wrap;
 }
 
 function renderConstraints() {
@@ -338,7 +504,7 @@ function renderConstraints() {
     el.append(head);
 
     for (const f of constraintFields(c)) el.append(f);
-    if (c.source) el.append(el_("small", "“" + c.source + "”"));
+    if (c.source) el.append(makeEl("small", "“" + c.source + "”"));
     box.append(el);
   });
 }
@@ -383,6 +549,8 @@ function constraintFields(c) {
 }
 
 // ---- result / Gantt -----------------------------------------------------
+// Take the solver's result and update the status pill, the message banner,
+// the health strip, and the timeline. Branches on the status it returned.
 function renderResult(result) {
   $("result").hidden = false;
   const status = result.status || "?";
@@ -392,42 +560,113 @@ function renderResult(result) {
     "pill " + (status === "OPTIMAL" || status === "FEASIBLE" ? "pill-ok" : status === "INFEASIBLE" ? "pill-bad" : "pill-warn");
 
   const banner = $("banner");
-  const tl = $("timeline");
   banner.hidden = true;
   banner.textContent = "";
-  tl.innerHTML = "";
 
+  if (status === "OPTIMAL" || status === "FEASIBLE") {
+    if (result.schedule && result.schedule.length) {
+      lastFeasibleSchedule = result.schedule;
+      renderHealth(status, result.schedule, false);
+      drawTimeline(result.schedule, false);
+    } else {
+      banner.hidden = false;
+      banner.className = "banner";
+      banner.textContent = "Solved, but there are no activities to show.";
+      renderHealth(status, null, false);
+      $("timeline").innerHTML = "";
+    }
+    return;
+  }
   if (status === "INFEASIBLE") {
     banner.hidden = false;
     banner.className = "banner banner-bad";
     if (lastFeasibleSchedule) {
-      banner.textContent =
-        "That change broke the schedule — nothing fits all the rules now.";
-      const g = buildGantt(lastFeasibleSchedule);
-      g.classList.add("gantt-stale");
-      tl.append(g);
+      banner.textContent = "That change broke the schedule — nothing fits all the rules now.";
+      renderHealth(status, lastFeasibleSchedule, true);
+      drawTimeline(lastFeasibleSchedule, true);
     } else {
-      banner.textContent =
-        "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
+      banner.textContent = "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
+      renderHealth(status, null, false);
+      $("timeline").innerHTML = "";
     }
     return;
   }
-  if (status !== "OPTIMAL" && status !== "FEASIBLE") {
-    banner.hidden = false;
-    banner.className = "banner banner-warn";
-    banner.textContent = "Solver returned: " + status;
-    return;
-  }
-  if (!result.schedule || !result.schedule.length) {
-    banner.hidden = false;
-    banner.className = "banner";
-    banner.textContent = "Solved, but there are no activities to show.";
-    return;
-  }
-  lastFeasibleSchedule = result.schedule;
-  const g = buildGantt(result.schedule);
-  renderTightness(g, result.schedule);
+  banner.hidden = false;
+  banner.className = "banner banner-warn";
+  banner.textContent = "Solver returned: " + status;
+  renderHealth(status, null, false);
+  $("timeline").innerHTML = "";
+}
+
+// Draw (or redraw) the timeline. Kept separate so a section-collapse toggle can redraw
+// instantly from the schedule already on hand, without re-solving.
+function drawTimeline(schedule, stale) {
+  shownSchedule = schedule;
+  shownStale = stale;
+  const tl = $("timeline");
+  tl.innerHTML = "";
+  if (!schedule || !schedule.length) return;
+  const g = buildGantt(schedule);
+  if (stale) g.classList.add("gantt-stale");
+  else renderTightness(g, schedule);
   tl.append(g);
+  const leg = buildLegend();
+  if (leg) tl.append(leg);
+}
+
+// A small legend of the activity types currently in use (color swatch -> label).
+function buildLegend() {
+  const used = [...new Set(scenario.activities.map((a) => a.type).filter((t) => t && TYPES[t]))];
+  if (!used.length) return null;
+  const leg = document.createElement("div");
+  leg.className = "legend";
+  for (const t of used) {
+    const item = document.createElement("span");
+    item.className = "legend-item";
+    const sw = document.createElement("span");
+    sw.className = "legend-swatch";
+    sw.style.background = TYPES[t].color;
+    item.append(sw, makeEl("span", TYPES[t].label));
+    leg.append(item);
+  }
+  return leg;
+}
+
+// Distinct section names in the current plan (matches buildGantt's grouping).
+function sectionNames() {
+  return [...new Set(scenario.activities.map((a) => (a.section && a.section.trim()) || "Ungrouped"))];
+}
+
+// Overview = every section collapsed to a summary bar; Lanes = every section expanded.
+function setView(isOverview) {
+  overview = isOverview;
+  collapsed.clear();
+  if (overview) for (const s of sectionNames()) collapsed.add(s);
+  const btn = $("view-toggle");
+  if (btn) btn.textContent = overview ? "Lanes" : "Overview";
+  drawTimeline(shownSchedule, shownStale);
+}
+
+// The health strip: status + finish time + day slack + how many activities are tight.
+function renderHealth(status, schedule, stale) {
+  const strip = $("health");
+  strip.hidden = false;
+  strip.innerHTML = "";
+  const ok = status === "OPTIMAL" || status === "FEASIBLE";
+  const kind = ok ? "ok" : status === "INFEASIBLE" ? "bad" : "warn";
+  const label = ok ? "✅ FEASIBLE" : status === "INFEASIBLE" ? "⛔ INFEASIBLE" : "… " + status;
+  strip.append(makeEl("span", label, "health-pill health-" + kind));
+  if (schedule && schedule.length) {
+    const caps = activityCaps();
+    const finish = Math.max(...schedule.map((s) => s.end));
+    strip.append(makeEl("span", "finishes " + hhmm(finish), "health-stat"));
+    if (scenario.day) {
+      strip.append(makeEl("span", dur(toMin(scenario.day.end) - finish) + " slack", "health-stat"));
+    }
+    const tight = schedule.filter((s) => isTight(s, caps)).length;
+    strip.append(makeEl("span", tight + " tight", "health-stat"));
+    if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
+  }
 }
 
 function buildGantt(schedule) {
@@ -454,48 +693,111 @@ function buildGantt(schedule) {
   // Time axis: ~6 "nice"-stepped ticks across the fitted window.
   const axis = document.createElement("div");
   axis.className = "gantt-row gantt-axis";
-  axis.append(el_("div", "", "gantt-label"));
+  axis.append(makeEl("div", "", "gantt-label"));
   const axisTrack = document.createElement("div");
   axisTrack.className = "gantt-track";
   const step = niceStep(span);
   for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
-    const tick = el_("span", hhmm(t), "tick-label");
+    const tick = makeEl("span", hhmm(t), "tick-label");
     tick.style.left = pct(t) + "%";
     axisTrack.append(tick);
   }
   axis.append(axisTrack);
   g.append(axis);
 
-  // One lane per activity, ordered by start time.
-  [...schedule]
-    .sort((a, b) => a.start - b.start)
-    .forEach((item) => {
-      const row = document.createElement("div");
-      row.className = "gantt-row";
-      const label = el_("div", item.id, "gantt-label");
-      label.title = item.id;
-      row.append(label);
-
-      const track = document.createElement("div");
-      track.className = "gantt-track lane";
-      const bar = document.createElement("div");
-      bar.className = "bar";
-      bar.dataset.id = item.id;
-      bar.style.left = pct(item.start) + "%";
-      bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
-      bar.style.background = colorFor(item.id);
-      bar.title = `${item.id}: ${hhmm(item.start)}–${hhmm(item.end)}`;
-      bar.append(el_("span", `${hhmm(item.start)}–${hhmm(item.end)}`, "bar-time"));
-      track.append(bar);
-      row.append(track);
-      g.append(row);
-    });
+  // Group activities into section swimlanes (OPEN by default; click a header to collapse).
+  const sectionOf = (id) => {
+    const a = scenario.activities.find((x) => x.id === id);
+    return (a && a.section && a.section.trim()) || "Ungrouped";
+  };
+  const groups = new Map();
+  for (const item of schedule) {
+    const sec = sectionOf(item.id);
+    if (!groups.has(sec)) groups.set(sec, []);
+    groups.get(sec).push(item);
+  }
+  const caps = activityCaps();
+  for (const [sec, items] of groups) {
+    const isOpen = !collapsed.has(sec);
+    const tight = items.some((it) => isTight(it, caps));
+    g.append(sectionHeaderRow(sec, items, isOpen, tight, pct));
+    if (isOpen) {
+      [...items].sort((a, b) => a.start - b.start).forEach((item) => g.append(activityRow(item, pct)));
+    }
+  }
   return g;
 }
 
-// A "nice" tick step (minutes) giving ~6 labels across `span`.
+// A section header: caret + name + task count (+ ⚠ if any task is tight), with a rolled-up
+// summary bar spanning the section's busy window when collapsed. Clicking it toggles open/closed.
+function sectionHeaderRow(sec, items, isOpen, tight, pct) {
+  const row = document.createElement("div");
+  row.className = "gantt-row gantt-section";
+
+  const label = document.createElement("div");
+  label.className = "gantt-label sec-label";
+  label.append(makeEl("span", isOpen ? "▾" : "▸", "sec-caret"));
+  label.append(makeEl("span", sec, "sec-name"));
+  label.append(makeEl("span", String(items.length), "sec-count"));
+  if (tight) label.append(makeEl("span", "⚠", "sec-warn"));
+  label.title = `${sec} — ${items.length} task(s)` + (isOpen ? "" : " (click to expand)");
+  label.onclick = () => {
+    if (collapsed.has(sec)) collapsed.delete(sec);
+    else collapsed.add(sec);
+    drawTimeline(shownSchedule, shownStale);
+  };
+  row.append(label);
+
+  const track = document.createElement("div");
+  track.className = "gantt-track lane";
+  if (!isOpen) {
+    const lo = Math.min(...items.map((i) => i.start));
+    const hi = Math.max(...items.map((i) => i.end));
+    const bar = document.createElement("div");
+    bar.className = "bar bar-summary" + (tight ? " bar-snug" : "");
+    bar.style.left = pct(lo) + "%";
+    bar.style.width = Math.max(0.8, pct(hi) - pct(lo)) + "%";
+    bar.title = `${sec}: ${hhmm(lo)}–${hhmm(hi)}, ${items.length} task(s)`;
+    bar.append(makeEl("span", `${items.length} tasks`, "bar-time"));
+    track.append(bar);
+  }
+  row.append(track);
+  return row;
+}
+
+// One activity lane (shown when its section is expanded).
+function activityRow(item, pct) {
+  const row = document.createElement("div");
+  row.className = "gantt-row gantt-activity";
+  const label = makeEl("div", item.id, "gantt-label");
+  label.title = item.id;
+  row.append(label);
+  const track = document.createElement("div");
+  track.className = "gantt-track lane";
+  const bar = document.createElement("div");
+  bar.className = "bar" + (item.id === selectedId ? " selected" : "");
+  bar.dataset.id = item.id;
+  bar.style.left = pct(item.start) + "%";
+  bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
+  bar.style.background = colorFor(item.id);
+  bar.title = `${item.id}: ${hhmm(item.start)}–${hhmm(item.end)}`;
+  bar.append(makeEl("span", `${hhmm(item.start)}–${hhmm(item.end)}`, "bar-time"));
+  // Select this activity: re-highlight + open the Inspector from the schedule on hand.
+  // Nothing in the scenario changed, so we redraw + refresh — never re-solve.
+  bar.onclick = () => {
+    selectedId = item.id;
+    drawTimeline(shownSchedule, shownStale);
+    renderInspector();
+  };
+  track.append(bar);
+  row.append(track);
+  return row;
+}
+
+// Pick a round tick spacing (in minutes) so the axis shows about 6 labels across `span`.
 function niceStep(span) {
   const target = span / 6;
+  // Round step sizes we allow, smallest first; use the first one big enough.
   for (const s of [15, 30, 60, 120, 180, 240, 360, 720]) if (s >= target) return s;
   return 1440;
 }
@@ -515,52 +817,43 @@ function toMin(hm) {
 function dur(min) {
   const h = Math.floor(min / 60);
   const m = min % 60;
-  return (h ? h + "h" : "") + (h && m ? " " : "") + (m || !h ? m + "m" : "");
+  if (h && m) return h + "h " + m + "m";
+  if (h) return h + "h";
+  return m + "m";
 }
 
-// Tightness readout (pure JS over the solved schedule — no extra solve):
-// (a) day slack = day.end - latest activity end; (b) per-deadline slack for each
-// enabled time_window with a latest_end. Also tints bars ending within TIGHT_MIN
-// of their own deadline so "tight" is visible on the timeline.
+// How close each activity runs to its cap — shared by the health strip, the section ⚠ flag,
+// and the bar tinting. A cap is the tightest enabled time_window latest_end, plus the day end.
 const TIGHT_MIN = 15;
-function renderTightness(g, schedule) {
-  const byId = new Map(schedule.map((s) => [s.id, s]));
-
-  // Per-activity deadline (the tightest enabled time_window latest_end).
-  const deadline = new Map();
+function activityCaps() {
+  const dl = new Map();
   for (const c of scenario.constraints) {
     if (c.type !== "time_window" || c.enabled === false || !c.latest_end) continue;
     const d = toMin(c.latest_end);
     if (d == null) continue;
-    if (!deadline.has(c.activity) || d < deadline.get(c.activity)) deadline.set(c.activity, d);
+    if (!dl.has(c.activity) || d < dl.get(c.activity)) dl.set(c.activity, d);
   }
-  // Day end is a deadline on every activity too.
-  const dayEnd = scenario.day ? toMin(scenario.day.end) : null;
-
-  const notes = [];
-  if (dayEnd != null) {
-    const latestEnd = Math.max(...schedule.map((s) => s.end));
-    notes.push(`${dur(dayEnd - latestEnd)} free in the day`);
-  }
-  for (const [aid, d] of deadline) {
-    const s = byId.get(aid);
-    if (s) notes.push(`${aid}: ${dur(d - s.end)} before its deadline`);
-  }
-
-  // Tint each bar by how close its end is to the activity's own cap (deadline or day end).
+  return { dl, dayEnd: scenario.day ? toMin(scenario.day.end) : null };
+}
+function slackOf(item, caps) {
+  const c = [caps.dl.get(item.id), caps.dayEnd].filter((x) => x != null);
+  return c.length ? Math.min(...c) - item.end : null;
+}
+function isTight(item, caps) {
+  const s = slackOf(item, caps);
+  return s != null && s <= TIGHT_MIN;
+}
+// Tint each activity bar by how close it runs to its cap (no extra solve). Summary bars have no
+// dataset.id, so they're skipped here — their tight flag is set when the section header is built.
+function renderTightness(g, schedule) {
+  const caps = activityCaps();
+  const byId = new Map(schedule.map((s) => [s.id, s]));
   g.querySelectorAll(".bar").forEach((bar) => {
     const s = byId.get(bar.dataset.id);
     if (!s) return;
-    const caps = [deadline.get(s.id), dayEnd].filter((x) => x != null);
-    if (!caps.length) return;
-    const slack = Math.min(...caps) - s.end;
-    if (slack <= TIGHT_MIN) bar.classList.add(slack <= 5 ? "bar-tight" : "bar-snug");
+    const slack = slackOf(s, caps);
+    if (slack != null && slack <= TIGHT_MIN) bar.classList.add(slack <= 5 ? "bar-tight" : "bar-snug");
   });
-
-  if (notes.length) {
-    const el = el_("div", notes.join("  ·  "), "slack");
-    g.prepend(el);
-  }
 }
 
 // ---- tiny DOM helpers ---------------------------------------------------
@@ -570,13 +863,7 @@ function cardShell(cls) {
   return el;
 }
 function badge(type) {
-  return el_("span", type, "badge badge-" + type);
-}
-function swatch(i) {
-  const s = document.createElement("span");
-  s.className = "swatch";
-  s.style.background = COLORS[i % COLORS.length];
-  return s;
+  return makeEl("span", type, "badge badge-" + type);
 }
 function deleteBtn(onClick) {
   const b = document.createElement("button");
@@ -602,7 +889,7 @@ function textInput(value, onChange, aria, cls) {
 function field(label, value, type, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "field";
-  wrap.append(el_("span", label, "field-lbl"));
+  wrap.append(makeEl("span", label, "field-lbl"));
   const inp = document.createElement("input");
   inp.type = type;
   inp.value = value;
@@ -622,7 +909,7 @@ function textField(label, value, onChange) {
 function activitySelect(label, value, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "field";
-  wrap.append(el_("span", label, "field-lbl"));
+  wrap.append(makeEl("span", label, "field-lbl"));
   const sel = document.createElement("select");
   const ids = scenario.activities.map((a) => a.id);
   if (value && !ids.includes(value)) {
@@ -652,7 +939,7 @@ function activitySelect(label, value, onChange) {
 function activityChecklist(selected, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "field";
-  wrap.append(el_("span", "activities", "field-lbl"));
+  wrap.append(makeEl("span", "activities", "field-lbl"));
   const list = document.createElement("div");
   list.className = "checklist";
   const ids = scenario.activities.map((a) => a.id);
@@ -670,7 +957,7 @@ function activityChecklist(selected, onChange) {
     list.append(checkboxRow(id, `(missing: ${id})`, true, (on) => toggle(id, on)));
   }
   if (!ids.length && !dangling.length)
-    list.append(el_("span", "No activities to choose from.", "hint"));
+    list.append(makeEl("span", "No activities to choose from.", "hint"));
   wrap.append(list);
   return wrap;
 }
@@ -682,7 +969,7 @@ function checkboxRow(value, label, checked, onChange) {
   cb.checked = checked;
   cb.onchange = () => onChange(cb.checked);
   row.append(cb);
-  row.append(el_("span", label));
+  row.append(makeEl("span", label));
   return row;
 }
 // Ordered, editable list of activity slots for a sequence; top-to-bottom is array order.
@@ -690,7 +977,7 @@ function checkboxRow(value, label, checked, onChange) {
 function sequenceEditor(steps, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "field";
-  wrap.append(el_("span", "steps (in order)", "field-lbl"));
+  wrap.append(makeEl("span", "steps (in order)", "field-lbl"));
   const list = document.createElement("div");
   list.className = "sequence";
   const update = (next) => {
@@ -700,7 +987,7 @@ function sequenceEditor(steps, onChange) {
   steps.forEach((id, i) => {
     const row = document.createElement("div");
     row.className = "seq-step";
-    row.append(el_("span", String(i + 1) + ".", "seq-num"));
+    row.append(makeEl("span", String(i + 1) + ".", "seq-num"));
     row.append(activitySelect("", id, (v) => {
       const next = steps.slice();
       next[i] = v;
@@ -719,7 +1006,7 @@ function sequenceEditor(steps, onChange) {
     row.append(deleteBtn(() => update(steps.filter((_, j) => j !== i))));
     list.append(row);
   });
-  if (!steps.length) list.append(el_("span", "No steps yet.", "hint"));
+  if (!steps.length) list.append(makeEl("span", "No steps yet.", "hint"));
   const add = document.createElement("button");
   add.className = "btn btn-ghost btn-sm seq-add";
   add.textContent = "+ Add step";
@@ -741,7 +1028,7 @@ function moveBtn(glyph, title, disabled, onClick) {
 function selectField(label, value, options, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "field";
-  wrap.append(el_("span", label, "field-lbl"));
+  wrap.append(makeEl("span", label, "field-lbl"));
   const sel = document.createElement("select");
   for (const o of options) {
     const opt = document.createElement("option");
@@ -757,7 +1044,8 @@ function selectField(label, value, options, onChange) {
   wrap.append(sel);
   return wrap;
 }
-function el_(tag, text, cls) {
+// Make an element with text and an optional CSS class. Used all over the rendering code.
+function makeEl(tag, text, cls) {
   const e = document.createElement(tag);
   e.textContent = text;
   if (cls) e.className = cls;

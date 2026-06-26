@@ -86,9 +86,9 @@ def _ask(sentence: str, repair: str = "", previous: str = "") -> str:
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": content},
             ],
-            format="json",  # valid-JSON mode; Pydantic checks the structure, repair-retry on failure
-            # num_ctx raised from Ollama's ~4K default so longer inputs aren't silently truncated.
-            # 16384 ≈ ~25 pages; feed long docs in portions. On a small GPU this partly offloads to CPU.
+            format="json",  # make the model return valid JSON; Pydantic then checks the structure
+            # num_ctx is the model's memory window. We raise it well above Ollama's
+            # small default so long inputs aren't cut off.
             options={"temperature": 0, "num_predict": 2048, "num_ctx": 16384},
         )
     except Exception as e:  # Ollama not running, or model not pulled

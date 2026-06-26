@@ -66,9 +66,10 @@ def solve_route():
     try:
         scenario = Scenario.model_validate(body)
     except ValidationError as e:
-        # Bad/invalid IR (missing fields, malformed HH:MM, …) — a client error.
-        # Keep only the JSON-safe bits of each error (drop the raw exception in
-        # `ctx`, which isn't serializable).
+        # The schedule was invalid (missing fields, bad HH:MM time, etc.).
+        # Turn each error into a small {location, message} pair the browser can
+        # show. We keep only these text fields because the full error also holds
+        # a raw exception that can't be turned into JSON.
         details = [{"loc": ".".join(str(p) for p in err["loc"]),
                     "message": err["msg"]} for err in e.errors()]
         return jsonify({"error": "That schedule isn't valid.",

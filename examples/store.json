@@ -1,0 +1,21 @@
+{
+  "day": { "start": "06:00", "end": "22:00" },
+  "activities": [
+    { "id": "deli_prep", "duration": 60, "section": "Deli" },
+    { "id": "deli_open", "duration": 30, "section": "Deli" },
+    { "id": "deli_clean", "duration": 30, "section": "Deli" },
+    { "id": "bake_bread", "duration": 180, "section": "Bakery" },
+    { "id": "bake_pastry", "duration": 90, "section": "Bakery" },
+    { "id": "bakery_clean", "duration": 30, "section": "Bakery" },
+    { "id": "dairy_restock", "duration": 45, "section": "Dairy" },
+    { "id": "dairy_check", "duration": 30, "section": "Dairy" },
+    { "id": "register_open", "duration": 15, "section": "FrontDesk" },
+    { "id": "greet_morning", "duration": 120, "section": "FrontDesk" },
+    { "id": "register_close", "duration": 15, "section": "FrontDesk" }
+  ],
+  "constraints": [
+    { "id": "c1", "type": "sequence", "activities": ["deli_prep", "deli_open", "deli_clean"], "enabled": true, "label": "Deli: prep, open, clean" },
+    { "id": "c2", "type": "time_window", "activity": "register_open", "earliest": "06:00", "enabled": true, "label": "Registers open at 6 AM" },
+    { "id": "c3", "type": "sequence", "activities": ["bake_bread", "bake_pastry"], "enabled": true, "label": "Bread before pastry" }
+  ]
+}

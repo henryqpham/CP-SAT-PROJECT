@@ -21,27 +21,30 @@
         </div>
       </header>
 
+      <nav class="tabs" id="tabs" aria-label="Saved plans"></nav>
+
       <div id="alert" class="alert" role="alert" hidden></div>
 
-      <!-- Dormant AI path: kept in the DOM so existing JS wiring stays valid; hidden in the manual MVP. -->
+      <div id="health" class="health" hidden></div>
+
+      <!-- The AI text box is turned off for now. We keep it hidden so the JS that still uses it doesn't error. -->
       <div hidden>
         <textarea id="sentence"></textarea>
         <button type="button" id="parse-btn">Parse</button>
       </div>
 
       <div class="dash">
-        <!-- LEFT: the controls -->
-        <section class="panel col-left" id="board">
+        <!-- LEFT: the activity library (click to add), the day window, and the constraints -->
+        <section class="panel col-lib" id="library">
+          <div class="board-head">
+            <h2>Library</h2>
+          </div>
+          <div id="lib-templates"></div>
+
           <div class="board-head">
             <h2>Day window</h2>
           </div>
           <div id="day"></div>
-
-          <div class="board-head">
-            <h2>Activities</h2>
-            <button type="button" id="add-activity" class="btn btn-ghost btn-sm">+ Activity</button>
-          </div>
-          <div id="activities"></div>
 
           <div class="board-head">
             <h2>Constraints</h2>
@@ -58,15 +61,21 @@
           <div id="constraints"></div>
         </section>
 
-        <!-- RIGHT: the timeline (the centerpiece) -->
-        <section class="panel col-right" id="result">
+        <!-- CENTER: the timeline (the main view) -->
+        <section class="panel col-center" id="result">
           <div class="result-head">
             <h2>Timeline</h2>
-            <span id="status" class="pill" aria-live="polite"></span>
+            <div class="result-actions">
+              <button type="button" id="view-toggle" class="btn btn-ghost btn-sm">Overview</button>
+              <span id="status" class="pill" aria-live="polite"></span>
+            </div>
           </div>
           <div id="banner" class="banner" hidden></div>
           <div id="timeline"></div>
         </section>
+
+        <!-- RIGHT: the inspector — edit panel for the activity you clicked (filled in by app.js) -->
+        <section class="panel col-insp" id="inspector"></section>
       </div>
     </div>
 

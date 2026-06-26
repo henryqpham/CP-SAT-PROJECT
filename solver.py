@@ -27,12 +27,12 @@ def solve(scenario: Scenario) -> dict:
         if 0 <= ds < de <= DAY:
             day_start, day_end, day_set = ds, de, True
 
-    # Scan conditionals once to learn the model shape:
-    #   - which activity is OPTIONAL (a conditional's when.activity), and
-    #   - which activity has a CONDITIONAL DURATION (then.set_duration), keyed
-    #     on the optional activity's presence.
+    # Look through the conditionals once to find two things:
+    #   - which activities are OPTIONAL (named in a conditional's "when"), and
+    #   - which activities change DURATION based on whether another activity
+    #     is present (a conditional's "then.set_duration").
     optional_ids = set()
-    # duration_rules[activity_id] = (presence_literal_owner_id, factor)
+    # duration_rules[activity_id] = {trigger activity, factor, when to apply it}
     duration_rules = {}
     for c in scenario.constraints:
         if not c.enabled or c.type != "conditional":
@@ -44,10 +44,11 @@ def solve(scenario: Scenario) -> dict:
         set_dur = (c.then or {}).get("set_duration") or {}
         target = set_dur.get("activity")
         factor = set_dur.get("factor", 1)
-        # Ignore malformed/nonsensical rules rather than failing opaquely: a
-        # negative or non-numeric factor would build a negative interval size,
-        # and a self-referential rule ("if X is absent, change X's duration")
-        # would silently drop X. Skipping leaves the activity at base duration.
+        # Skip rules that don't make sense instead of crashing. The factor must
+        # be a number that isn't negative (a negative one would make a negative
+        # length), and the rule can't point an activity at itself (that would
+        # quietly drop it). A skipped rule just leaves the activity at its
+        # normal duration.
         valid_factor = isinstance(factor, (int, float)) and factor >= 0
         if (
             target in base_duration
@@ -55,7 +56,8 @@ def solve(scenario: Scenario) -> dict:
             and target != when_activity
             and valid_factor
         ):
-            # Honor the present flag: factor applies in the branch named by it.
+            # Remember whether the longer duration applies when the trigger is
+            # present or when it's absent.
             duration_rules[target] = {
                 "trigger": when_activity,
                 "factor": factor,
@@ -80,7 +82,7 @@ def solve(scenario: Scenario) -> dict:
         if rule is not None:
             # Variable-size interval: size depends on the trigger's presence.
             base = base_duration[aid]
-            scaled = int(base * rule["factor"])  # int() keeps a float factor's bound integral
+            scaled = int(base * rule["factor"])  # CP-SAT needs whole numbers, so round to an int
             lo, hi = sorted((base, scaled))
             size = model.new_int_var(lo, hi, f"size_{aid}")
 
@@ -92,6 +94,8 @@ def solve(scenario: Scenario) -> dict:
                 trigger_present = model.new_bool_var(f"present_{rule['trigger']}")
                 presence[rule["trigger"]] = trigger_present
 
+            # Use the scaled length in the branch the rule asked for, and the
+            # normal length in the other branch.
             if rule["apply_when_present"]:
                 model.add(size == scaled).only_enforce_if(trigger_present)
                 model.add(size == base).only_enforce_if(trigger_present.Not())
@@ -127,42 +131,47 @@ def solve(scenario: Scenario) -> dict:
         if len(ivs) >= 2:
             model.add_no_overlap(ivs)
 
-    # Objective (lexicographic): first schedule as many optional activities as
-    # possible (a fuller day is the better demo), then tidy the layout. We work
-    # over the *present* activities; absent optionals are neutralized so they
-    # don't count (start->DAY, end->0 raise/widen nothing).
-    eff_starts, eff_ends = [], []
+    # What we ask the solver to do, in order of priority: first fit in as many
+    # optional activities as possible (a fuller day is the better demo), then
+    # neaten the layout. To measure the layout we only want the activities that
+    # are actually scheduled, so for a dropped activity we push its start to the
+    # end of the day and its end to the start of the day. That way it can't move
+    # the earliest start or the latest end we measure below.
+    effective_starts, effective_ends = [], []
     for aid in starts:
         p = presence.get(aid)
         if p is None:
-            eff_starts.append(starts[aid])
-            eff_ends.append(ends[aid])
+            effective_starts.append(starts[aid])
+            effective_ends.append(ends[aid])
         else:
-            es = model.new_int_var(0, DAY, f"effstart_{aid}")
-            ee = model.new_int_var(0, DAY, f"effend_{aid}")
-            model.add(es == starts[aid]).only_enforce_if(p)
-            model.add(es == DAY).only_enforce_if(p.Not())
-            model.add(ee == ends[aid]).only_enforce_if(p)
-            model.add(ee == 0).only_enforce_if(p.Not())
-            eff_starts.append(es)
-            eff_ends.append(ee)
+            effective_start = model.new_int_var(0, DAY, f"effstart_{aid}")
+            effective_end = model.new_int_var(0, DAY, f"effend_{aid}")
+            model.add(effective_start == starts[aid]).only_enforce_if(p)
+            model.add(effective_start == DAY).only_enforce_if(p.Not())
+            model.add(effective_end == ends[aid]).only_enforce_if(p)
+            model.add(effective_end == 0).only_enforce_if(p.Not())
+            effective_starts.append(effective_start)
+            effective_ends.append(effective_end)
 
-    if eff_starts:
+    if effective_starts:
         min_start = model.new_int_var(0, DAY, "min_start")
         max_end = model.new_int_var(0, DAY, "max_end")
-        model.add_min_equality(min_start, eff_starts)
-        model.add_max_equality(max_end, eff_ends)
-        # With a day window, minimize the finish time so the schedule packs from
-        # the start of the day. Without one, minimize only the span (width): the
-        # block stays compact but its position floats (minimizing the finish with
-        # no day floor would just drift activities into the empty pre-dawn hours).
-        tidy = max_end if day_set else (max_end - min_start)
+        model.add_min_equality(min_start, effective_starts)
+        model.add_max_equality(max_end, effective_ends)
+        # If we know when the day starts, finish as early as possible so the
+        # schedule packs toward the start of the day. If we don't, just make the
+        # activities sit close together (the block stays compact but can float),
+        # because with no fixed start, minimizing the finish would drift the
+        # activities into the empty early-morning hours.
+        if day_set:
+            tidy = max_end
+        else:
+            tidy = max_end - min_start
         if presence:
-            # Keeping an activity must beat ANY layout saving. `tidy` ranges over
-            # [-DAY, DAY], so the per-activity weight has to exceed that whole
-            # range — otherwise a lone optional activity is dropped (empty
-            # schedule) because its absence drives `tidy` negative. (DAY+1 was
-            # too small: dropping scored DAY, keeping scored DAY+1 - duration.)
+            # Keeping an activity should always be worth more than any layout
+            # improvement, so the solver never drops an activity just to tidy
+            # the schedule. We give each kept activity a big reward (bigger than
+            # the whole range tidy can span) so keeping always wins.
             model.maximize((2 * DAY + 1) * sum(presence.values()) - tidy)
         else:
             model.minimize(tidy)
