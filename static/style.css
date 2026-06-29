@@ -326,6 +326,20 @@ select:focus {
 .health-warn { background: var(--warn-bg); color: var(--warn); }
 .health-stat { color: var(--ink); font-variant-numeric: tabular-nums; }
 .health-note { color: var(--muted); font-style: italic; }
+/* capacity: set-your-horizon chip + the used/over fill bar */
+.health-chip {
+  font: inherit; font-size: 0.85rem; cursor: pointer;
+  background: var(--track); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 999px; padding: 0.1rem 0.6rem;
+}
+.health-chip:hover { border-color: var(--accent); color: var(--accent); }
+.cap-bar {
+  position: relative; width: 8rem; height: 0.55rem;
+  background: var(--track); border-radius: 999px; overflow: hidden;
+}
+.cap-fill { height: 100%; background: var(--ok); border-radius: 999px; transition: width 0.15s; }
+.cap-bar.cap-over .cap-fill { background: var(--bad); }
+.health-over { color: var(--bad); font-weight: 700; }
 
 /* section rows in the timeline (click a section header to collapse or expand it) */
 .gantt-section { margin-top: 0.15rem; }

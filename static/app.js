@@ -98,12 +98,19 @@ function addCustomTemplate() {
 $("lib-new-add").onclick = addCustomTemplate;
 $("lib-new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addCustomTemplate(); });
 
+// The scenario the SOLVER sees — strips front-end-only fields (e.g. `horizon`, a soft planning
+// budget used only by the capacity bar) so they're never sent to /solve.
+function solvePayload() {
+  const { horizon, ...rest } = scenario;
+  return rest;
+}
+
 // Solve the current in-memory scenario and draw the timeline. Reused by the
 // manual "Solve now" button and by the debounced live auto-solve below.
 function solveNow() {
   saveTabs(); // persist the current plan into its tab before solving
   return withBusy($("solve-btn"), "Solving…", async () => {
-    renderResult(await post("/solve", scenario));
+    renderResult(await post("/solve", solvePayload()));
   });
 }
 
@@ -811,7 +818,21 @@ function setView(isOverview) {
   drawTimeline(shownSchedule, shownStale);
 }
 
-// The health strip: status + finish time + how many activities are tight.
+// The planning window (horizon) in minutes — your time budget for the capacity bar. Uses an
+// explicit scenario.horizon if set, else the day-window span, else 24h. It's a SOFT budget (a
+// gauge), not a solver limit yet — the solver still runs single-day.
+function planHorizon() {
+  if (scenario.horizon && scenario.horizon > 0) return scenario.horizon;
+  if (scenario.day) {
+    const s = toMin(scenario.day.start);
+    const e = toMin(scenario.day.end);
+    if (s != null && e != null && e > s) return e - s;
+  }
+  return DAY;
+}
+
+// The health strip: status + CAPACITY (used vs. your horizon, over/under/left + a fill bar) +
+// finish + tight. Capacity is the 2-second "am I over or under my time budget?" glance.
 function renderHealth(status, schedule, stale) {
   const strip = $("health");
   strip.hidden = false;
@@ -820,13 +841,52 @@ function renderHealth(status, schedule, stale) {
   const kind = ok ? "ok" : status === "INFEASIBLE" ? "bad" : "warn";
   const label = ok ? "✅ FEASIBLE" : status === "INFEASIBLE" ? "⛔ INFEASIBLE" : "… " + status;
   strip.append(makeEl("span", label, "health-pill health-" + kind));
+
+  // Horizon chip: click to set your planning window (your time budget).
+  const horizon = planHorizon();
+  const chip = makeEl("button", "Horizon " + dur(horizon), "health-chip");
+  chip.type = "button";
+  chip.title = "Click to set your planning window (your time budget, in hours)";
+  chip.onclick = () => {
+    const v = prompt("Planning window (hours):", String(Math.round((horizon / 60) * 10) / 10));
+    if (v === null) return;
+    const h = parseFloat(v);
+    if (Number.isFinite(h) && h > 0) {
+      scenario.horizon = Math.round(h * 60);
+      saveTabs();
+      renderHealth(status, schedule, stale);
+    }
+  };
+  strip.append(chip);
+
   if (schedule && schedule.length) {
     const caps = activityCaps();
-    const finish = Math.max(...schedule.map((s) => s.end));
-    strip.append(makeEl("span", "finishes " + hhmm(finish), "health-stat"));
+    const lo = Math.min(...schedule.map((s) => s.start));
+    const hi = Math.max(...schedule.map((s) => s.end));
+    const span = Math.max(0, hi - lo); // wall-clock the plan occupies (correct with parallel lanes)
+    const pct = horizon > 0 ? Math.round((100 * span) / horizon) : 0;
+    const over = span > horizon;
+
+    const bar = document.createElement("div");
+    bar.className = "cap-bar" + (over ? " cap-over" : "");
+    const fill = document.createElement("div");
+    fill.className = "cap-fill";
+    fill.style.width = Math.min(100, pct) + "%";
+    bar.append(fill);
+    strip.append(bar);
+
+    strip.append(makeEl("span", dur(span) + " / " + dur(horizon) + " (" + pct + "%)", "health-stat"));
+    strip.append(
+      over
+        ? makeEl("span", "OVER by " + dur(span - horizon), "health-stat health-over")
+        : makeEl("span", dur(horizon - span) + " left", "health-stat")
+    );
+    strip.append(makeEl("span", "finishes " + hhmm(hi), "health-stat"));
     const tight = schedule.filter((s) => isTight(s, caps)).length;
     strip.append(makeEl("span", tight + " tight", "health-stat"));
     if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
+  } else {
+    strip.append(makeEl("span", "no activities yet", "health-note"));
   }
 }
 
