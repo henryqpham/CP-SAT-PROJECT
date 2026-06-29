@@ -122,7 +122,10 @@ and watch the timeline stretch or go red.
 
 Activities run free across the planning **horizon** — one 24h day by default, or set
 `"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity
-`time_window` constraints are what pin them down. Full example in `examples/lake.json`:
+`time_window` constraints are what pin them down — note their `earliest` / `latest_end` are day-1
+clock times (absolute minutes from the plan start), so on a multi-day horizon they still hold an
+activity inside the first day; per-day deadlines ("by 22:00 on day 3") are a planned follow-up. Full
+example in `examples/lake.json`:
 
 ```jsonc
 {

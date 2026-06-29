@@ -124,11 +124,14 @@ $("lib-new-add").onclick = addCustomTemplate;
 $("lib-new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addCustomTemplate(); });
 $("lib-new-cat").addEventListener("input", syncNewTypeStyle);
 
-// The scenario the SOLVER sees. `horizon` (the planning window in minutes) is now a real solver
-// bound, so we send the whole scenario. Extra UI-only keys (e.g. an activity's `type` for color)
-// are harmless — the IR ignores fields it doesn't define.
+// The scenario the SOLVER sees. `horizon` is a real solver bound, but only as a MULTI-DAY window:
+// we forward it only when it's longer than one day. A sub-day horizon stays a cosmetic capacity-bar
+// budget — sending it would turn an existing single-day plan INFEASIBLE. Extra UI-only keys (e.g. an
+// activity's `type` for color) are harmless — the IR ignores fields it doesn't define.
 function solvePayload() {
-  return scenario;
+  const { horizon, ...rest } = scenario;
+  if (horizon && horizon > DAY) rest.horizon = horizon;
+  return rest;
 }
 
 // Solve the current in-memory scenario and draw the timeline. Reused by the
@@ -923,8 +926,8 @@ function renderResult(result) {
   banner.textContent = "";
 
   if (status === "OPTIMAL" || status === "FEASIBLE") {
+    solvedHorizon = result.horizon || DAY; // size the timeline to what the solver used
     if (result.schedule && result.schedule.length) {
-      solvedHorizon = result.horizon || DAY; // size the timeline to what the solver used
       lastFeasibleSchedule = result.schedule;
       renderHealth(status, result.schedule, false);
       drawTimeline(result.schedule, false);
@@ -1008,9 +1011,9 @@ function setView(isOverview) {
   drawTimeline(shownSchedule, shownStale);
 }
 
-// The planning window (horizon) in minutes — your time budget for the capacity bar. Uses an
-// explicit scenario.horizon if set, else the day-window span, else 24h. It's a SOFT budget (a
-// gauge), not a solver limit yet — the solver still runs single-day.
+// The planning window (horizon) in minutes the capacity bar measures against. Uses an explicit
+// scenario.horizon if set, else the day-window span, else 24h. A horizon LONGER than one day is
+// also a real solver bound (see solvePayload); a sub-day horizon is only this cosmetic budget.
 function planHorizon() {
   if (scenario.horizon && scenario.horizon > 0) return scenario.horizon;
   if (scenario.day) {
@@ -1032,8 +1035,9 @@ function renderHealth(status, schedule, stale) {
   const label = ok ? "✅ FEASIBLE" : status === "INFEASIBLE" ? "⛔ INFEASIBLE" : "… " + status;
   strip.append(makeEl("span", label, "health-pill health-" + kind));
 
-  // Horizon chip: click to set your planning window (your time budget).
-  const horizon = planHorizon();
+  // The window the capacity bar measures against. While showing a stale (last-good) plan, use the
+  // horizon that plan was actually solved with, so the gauge and the drawn timeline agree.
+  const horizon = stale ? solvedHorizon : planHorizon();
   const chip = makeEl("button", "Horizon " + dur(horizon), "health-chip");
   chip.type = "button";
   chip.title = "Click to set your planning window (your time budget, in hours)";
@@ -1156,7 +1160,10 @@ function buildGanttMulti(schedule) {
   axis.append(makeEl("div", "", "gantt-label"));
   const axisTrack = document.createElement("div");
   axisTrack.className = "gantt-track";
-  for (let d = 0; d < totalDays; d++) {
+  // One "Day N" label per day, thinned so labels never crowd on a long horizon (the per-day
+  // gridlines below still mark every day).
+  const dayStep = Math.max(1, Math.ceil(totalDays / 8));
+  for (let d = 0; d < totalDays; d += dayStep) {
     const tick = makeEl("span", "Day " + (d + 1), "tick-label");
     tick.style.left = pct(d * DAY) + "%";
     axisTrack.append(tick);

@@ -79,6 +79,15 @@ class Scenario(BaseModel):
     # across the whole window, not just one day.
     horizon: Optional[int] = None
 
+    @field_validator("horizon", mode="before")
+    @classmethod
+    def _reject_bool_horizon(cls, v):
+        # Runs BEFORE coercion (an "after" validator would already see True as 1). Reject bools so
+        # `"horizon": true` is a clean error, not a silent 1-minute window.
+        if isinstance(v, bool):
+            raise ValueError("horizon must be a number of minutes, not a boolean")
+        return v
+
     @field_validator("horizon")
     @classmethod
     def _check_horizon(cls, v: Optional[int]) -> Optional[int]:

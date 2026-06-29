@@ -179,6 +179,9 @@ def solve(scenario: Scenario) -> dict:
             continue
 
         if c.type == "time_window":
+            # earliest/latest_end are absolute minutes from the plan start (day-1 clock time).
+            # On a multi-day horizon this still pins the activity inside day 1 — there is no
+            # "by 22:00 on day 3" yet. Per-day time windows are a planned follow-up.
             if c.activity not in starts:
                 continue
             if c.earliest is not None:
