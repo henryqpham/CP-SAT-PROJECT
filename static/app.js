@@ -12,6 +12,10 @@ let shownStale = false;
 let selectedId = null;
 // Timeline view: false = Lanes (per-section), true = Overview (lanes collapsed to summary bars).
 let overview = false;
+// Timeline zoom (presentation only — never re-solves). X = time-axis width multiple (1 = fit the
+// panel; higher widens the chart and the canvas scrolls). Y = row-height multiple.
+let zoomX = 1;
+let zoomY = 1;
 // Saved plans ("missions"): each tab is { name, scenario }. The active tab's scenario is the live one.
 let tabs = [];
 let activeTab = 0;
@@ -53,6 +57,17 @@ $("parse-btn").onclick = () =>
 $("solve-btn").onclick = () => solveNow();
 $("view-toggle").onclick = () => setView(!overview);
 
+// Timeline zoom sliders + "Fit" reset. These only restyle the drawn chart — no re-solve.
+$("zoom-x").oninput = (e) => { zoomX = parseFloat(e.target.value) || 1; applyZoom(); };
+$("zoom-y").oninput = (e) => { zoomY = parseFloat(e.target.value) || 1; applyZoom(); };
+$("zoom-reset").onclick = () => {
+  zoomX = 1;
+  zoomY = 1;
+  $("zoom-x").value = "1";
+  $("zoom-y").value = "1";
+  applyZoom();
+};
+
 // Example dropdown: fill it from /examples, and load the chosen example into the active plan.
 loadExamples();
 $("example-select").onchange = async (e) => {
@@ -80,10 +95,14 @@ $("library-import-file").onchange = (e) => { if (e.target.files[0]) importLibrar
 let libSearchTimer = null;
 $("library-search").oninput = (e) => {
   librarySearch = e.target.value;
+  libraryPage = 0; // a new search starts at page 1
   clearTimeout(libSearchTimer);
-  libSearchTimer = setTimeout(renderLibraryList, 120); // debounce so 600 rows don't rebuild per keystroke
+  libSearchTimer = setTimeout(renderLibraryList, 120); // debounce so 600 cards don't rebuild per keystroke
 };
-$("library-sort").onchange = (e) => { librarySort = e.target.value; renderLibraryList(); };
+// Segmented sort control (replaces the old dropdown).
+for (const b of document.querySelectorAll(".lib-sort-btn")) {
+  b.onclick = () => { librarySort = b.dataset.sort; libraryPage = 0; renderLibraryList(); };
+}
 
 // Inspector popup: close via × or a backdrop click (it opens on activity selection, below).
 $("inspector-close").onclick = closeInspector;
@@ -547,8 +566,13 @@ function resetRosterFilter() {
 let LIBRARY = [];
 // Browse-modal controls (don't re-solve; only "+ Add" changes the plan).
 let librarySearch = "";
-let libraryCategory = ""; // "" = all categories
+// Multi-select facets (empty set = no filter on that facet). AND across facets, OR within one.
+let librarySections = new Set();
+let libraryCategories = new Set();
+let libraryDurations = new Set(); // duration band keys: "≤15m" "15–45m" "45–90m" "90m+"
 let librarySort = "name";
+let libraryPage = 0; // 0-based page in the card grid
+const LIB_PAGE = 48; // cards per page
 // User-authored templates ("+ New" in the modal), persisted in localStorage like saved plans.
 let customTemplates = [];
 const TEMPLATES_KEY = "planner.templates.v1";
@@ -696,29 +720,48 @@ function importLibrary(file) {
   reader.readAsText(file);
 }
 
-// Rebuild the category filter CHIPS (All + one per category with a live count) and the "+ New"
-// autocomplete datalists, from the data (template categories + TYPES keys).
+// A template's duration band (the fixed Duration facet buckets).
+const DUR_BANDS = ["≤15m", "15–45m", "45–90m", "90m+"];
+function band(m) {
+  return m <= 15 ? "≤15m" : m <= 45 ? "15–45m" : m <= 90 ? "45–90m" : "90m+";
+}
+
+// Rebuild the facet RAIL (Sections, Category, Duration — each multi-select with live counts) and
+// the "+ New" autocomplete datalists, from the data (template sections/categories + TYPES keys).
 function rebuildLibraryFilter() {
   const allTpls = allTemplates();
-  const counts = {};
-  for (const tpl of allTpls) if (tpl.category) counts[tpl.category] = (counts[tpl.category] || 0) + 1;
-  const cats = new Set(Object.keys(counts));
-  for (const k of Object.keys(TYPES)) cats.add(k);
-  const sorted = [...cats].sort((a, b) => a.localeCompare(b));
+  const secCounts = {}, catCounts = {}, durCounts = {};
+  for (const tpl of allTpls) {
+    if (tpl.section) secCounts[tpl.section] = (secCounts[tpl.section] || 0) + 1;
+    if (tpl.category) catCounts[tpl.category] = (catCounts[tpl.category] || 0) + 1;
+    durCounts[band(tpl.minutes)] = (durCounts[band(tpl.minutes)] || 0) + 1;
+  }
 
-  const chips = $("library-chips");
-  if (chips) {
-    chips.innerHTML = "";
-    chips.append(libChip("", "All", allTpls.length, !libraryCategory, null));
-    for (const c of sorted) {
-      chips.append(libChip(c, (TYPES[c] && TYPES[c].label) || c, counts[c] || 0, libraryCategory === c, TYPES[c] && TYPES[c].color));
+  const rail = $("library-facets");
+  if (rail) {
+    rail.innerHTML = "";
+    const secs = Object.keys(secCounts).sort((a, b) => a.localeCompare(b));
+    if (secs.length) {
+      rail.append(facetGroup("Sections", secs.map((s) => libFacet(librarySections, s, s, secCounts[s], null))));
+    }
+    const cats = Object.keys(catCounts).sort((a, b) => a.localeCompare(b));
+    if (cats.length) {
+      rail.append(facetGroup("Category", cats.map((c) =>
+        libFacet(libraryCategories, c, (TYPES[c] && TYPES[c].label) || c, catCounts[c], TYPES[c] && TYPES[c].color))));
+    }
+    const bands = DUR_BANDS.filter((b) => durCounts[b]);
+    if (bands.length) {
+      rail.append(facetGroup("Duration", bands.map((b) => libFacet(libraryDurations, b, b, durCounts[b], null))));
     }
   }
-  // mirror the categories into the "+ New" datalist for autocomplete
+
+  // "+ New" category autocomplete: all known categories (template cats + TYPES keys).
+  const allCats = new Set(Object.keys(catCounts));
+  for (const k of Object.keys(TYPES)) allCats.add(k);
   const dl = $("lib-cat-options");
   if (dl) {
     dl.innerHTML = "";
-    for (const c of sorted) {
+    for (const c of [...allCats].sort((a, b) => a.localeCompare(b))) {
       const o = document.createElement("option");
       o.value = c;
       dl.append(o);
@@ -739,40 +782,113 @@ function rebuildLibraryFilter() {
   }
 }
 
-// One category filter chip: optional color dot + label + count; click to set or clear the filter.
-function libChip(value, label, count, active, color) {
+// A titled facet group in the rail (one of Sections / Category / Duration).
+function facetGroup(title, rows) {
+  const g = document.createElement("div");
+  g.className = "lib-facet-group";
+  g.append(makeEl("div", title, "lib-facet-title"));
+  const wrap = makeEl("div", "", "lib-facet-rows");
+  for (const r of rows) wrap.append(r);
+  g.append(wrap);
+  return g;
+}
+
+// One multi-select facet row: optional color dot + label + count. Click toggles it in `set`.
+function libFacet(set, value, label, count, color) {
   const chip = document.createElement("button");
   chip.type = "button";
-  chip.className = "lib-chip" + (active ? " active" : "");
+  chip.className = "lib-facet" + (set.has(value) ? " active" : "");
   if (color) {
     const dot = makeEl("span", "", "lib-chip-dot");
     dot.style.background = color;
     chip.append(dot);
   }
-  chip.append(makeEl("span", label, "lib-chip-label"));
+  chip.append(makeEl("span", label, "lib-facet-label"));
   chip.append(makeEl("span", String(count), "lib-chip-count"));
   chip.onclick = () => {
-    libraryCategory = libraryCategory === value ? "" : value;
+    if (set.has(value)) set.delete(value);
+    else set.add(value);
+    libraryPage = 0; // any filter change jumps back to page 1
     renderLibraryList();
   };
   return chip;
 }
 
-// Build one aligned grid row for a template (swatch · name · category · section · dur · actions).
-function libRowEl(tpl) {
-  const row = document.createElement("div");
-  row.className = "lib-row";
-  const sw = makeEl("span", "", "lib-row-swatch");
-  sw.style.background = (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)";
-  row.append(sw);
-  row.append(makeEl("span", tpl.label, "lib-row-name"));
-  row.append(makeEl("span", (TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category || "", "lib-row-cat"));
-  row.append(makeEl("span", tpl.section || "", "lib-row-sec"));
-  row.append(makeEl("span", dur(tpl.minutes), "lib-row-dur"));
-  const actions = makeEl("span", "", "lib-row-actions");
+// Active-filter pills (removable) + "Clear all". Rendered into #library-pills.
+function renderLibraryPills() {
+  const box = $("library-pills");
+  if (!box) return;
+  box.innerHTML = "";
+  const active = [];
+  for (const s of librarySections) active.push({ set: librarySections, value: s, label: s });
+  for (const c of libraryCategories) active.push({ set: libraryCategories, value: c, label: (TYPES[c] && TYPES[c].label) || c });
+  for (const d of libraryDurations) active.push({ set: libraryDurations, value: d, label: d });
+  for (const f of active) {
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "lib-pill";
+    pill.append(makeEl("span", f.label, "lib-pill-label"));
+    pill.append(makeEl("span", "×", "lib-pill-x"));
+    pill.onclick = () => { f.set.delete(f.value); libraryPage = 0; renderLibraryList(); };
+    box.append(pill);
+  }
+  if (active.length) {
+    const clear = makeEl("button", "Clear all", "lib-clear");
+    clear.type = "button";
+    clear.onclick = () => {
+      librarySections.clear(); libraryCategories.clear(); libraryDurations.clear();
+      libraryPage = 0;
+      renderLibraryList();
+    };
+    box.append(clear);
+  }
+}
+
+// Fill tray (modal footer): how full the current plan is vs the horizon, live as you add. This is
+// TOTAL booked work vs the budget (sum of durations), intentionally simpler than the health strip's
+// wall-clock span — both `scenario` and planHorizon() are already in scope, so no plumbing.
+function renderLibraryTray() {
+  const box = $("library-tray");
+  if (!box) return;
+  box.innerHTML = "";
+  const picks = scenario.activities.length;
+  const total = scenario.activities.reduce((s, a) => s + (a.duration || 0), 0);
+  const horizon = planHorizon();
+  const pct = horizon > 0 ? Math.round((100 * total) / horizon) : 0;
+  const over = total > horizon;
+
+  box.append(makeEl("span", `${picks} pick${picks === 1 ? "" : "s"}`, "lib-tray-picks"));
+  box.append(makeEl("span", `${dur(total)} of ${dur(horizon)}`, "lib-tray-stat"));
+  const bar = document.createElement("div");
+  bar.className = "lib-tray-bar" + (over ? " over" : "");
+  const fill = makeEl("div", "", "lib-tray-fill");
+  fill.style.width = Math.min(100, pct) + "%";
+  bar.append(fill);
+  box.append(bar);
+  box.append(makeEl("span", pct + "%", "lib-tray-pct" + (over ? " over" : "")));
+}
+
+// Build one template CARD: name, category·section meta, big duration, "×N in plan" badge, "+ Add",
+// and (for user-saved templates) a "saved" tag + remove ×. Tinted by its category color.
+function libCardEl(tpl) {
+  const card = document.createElement("div");
+  card.className = "lib-card";
+  card.style.setProperty("--cat", (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)");
+
+  // "× N in plan": how many activities in the current plan came from this template (matched by id base).
+  const base = slug(tpl.label);
+  const used = scenario.activities.filter((a) => a.id === base || a.id.startsWith(base + "_")).length;
+  if (used > 0) card.append(makeEl("span", "×" + used, "lib-card-used"));
+
+  card.append(makeEl("div", tpl.label, "lib-card-name"));
+  const meta = [(TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category, tpl.section].filter(Boolean);
+  if (meta.length) card.append(makeEl("div", meta.join(" · "), "lib-card-meta"));
+  card.append(makeEl("div", dur(tpl.minutes), "lib-card-dur"));
+
+  const foot = makeEl("div", "", "lib-card-foot");
   const add = document.createElement("button");
   add.type = "button";
-  add.className = "btn btn-sm lib-row-add";
+  add.className = "btn btn-sm lib-card-add";
   add.textContent = "+ Add";
   add.onclick = () => {
     scenario.activities.push({
@@ -783,16 +899,12 @@ function libRowEl(tpl) {
     });
     pushRecent(tpl.label);
     render(); // roster + (debounced) timeline update; modal stays open
-    renderLibraryList(); // refresh the "recent" strip + "in plan" counts
+    renderLibraryList(); // refresh the "in plan" counts
   };
-  // "× N in plan": how many activities in the current plan came from this template (matched by id base).
-  const base = slug(tpl.label);
-  const used = scenario.activities.filter((a) => a.id === base || a.id.startsWith(base + "_")).length;
-  if (used > 0) actions.append(makeEl("span", "×" + used + " in plan", "lib-row-used"));
-  actions.append(add);
-  // User-saved templates get a "saved" tag + a × to remove; seed (library.json) rows don't.
+  foot.append(add);
+  // User-saved templates get a "saved" tag + a × to remove; seed (library.json) cards don't.
   if (customTemplates.includes(tpl)) {
-    actions.append(makeEl("span", "saved", "lib-row-saved"));
+    foot.append(makeEl("span", "saved", "lib-row-saved"));
     const rm = deleteBtn(() => {
       const i = customTemplates.indexOf(tpl);
       if (i > -1) customTemplates.splice(i, 1);
@@ -800,65 +912,104 @@ function libRowEl(tpl) {
       renderLibraryList();
     });
     rm.title = "Remove saved template";
-    actions.append(rm);
+    foot.append(rm);
   }
-  row.append(actions);
-  return row;
+  card.append(foot);
+  return card;
 }
 
-// Filter + sort the catalog and draw it as an aligned grid with a sticky column header. Search-first
-// + a render cap (LIB_CAP) keep it fast at ~600 templates — real queries narrow it instantly.
-const LIB_CAP = 200;
+// Refresh the whole modal: rail facets + active pills + sort state, then draw the current PAGE of
+// filtered/sorted templates as a card grid, plus the "Showing N of M" count and the numbered pager.
 function renderLibraryList() {
   rebuildLibraryFilter();
+  renderLibraryPills();
+  renderLibraryTray();
+  for (const b of document.querySelectorAll(".lib-sort-btn")) b.classList.toggle("active", b.dataset.sort === librarySort);
+
   const box = $("library-list");
+  const count = $("library-count");
   box.innerHTML = "";
+  $("library-pager").innerHTML = "";
+
   if (!allTemplates().length) {
-    box.append(makeEl("p", "No templates yet — use “+ New” above to create one.", "hint"));
+    if (count) count.textContent = "";
+    box.append(makeEl("p", "No templates yet — use “+ New” to create one.", "hint"));
     return;
   }
+
+  const rows = filteredTemplates();
+  if (!rows.length) {
+    if (count) count.textContent = "0 results";
+    box.append(makeEl("p", "No activities match these filters. Try clearing one.", "hint"));
+    return;
+  }
+
+  // Clamp the page in case a filter shrank the result set, then slice out this page.
+  const pageCount = Math.ceil(rows.length / LIB_PAGE);
+  if (libraryPage >= pageCount) libraryPage = pageCount - 1;
+  if (libraryPage < 0) libraryPage = 0;
+  const pageRows = rows.slice(libraryPage * LIB_PAGE, libraryPage * LIB_PAGE + LIB_PAGE);
+
+  if (count) count.textContent = `Showing ${pageRows.length} of ${rows.length}`;
+  const frag = document.createDocumentFragment();
+  for (const tpl of pageRows) frag.append(libCardEl(tpl));
+  box.append(frag);
+  renderLibraryPager(pageCount);
+}
+
+// Apply the search text + the three facet sets, then sort. AND across facet groups, OR within one.
+function filteredTemplates() {
   const q = librarySearch.trim().toLowerCase();
-  let rows = allTemplates().filter((tpl) => {
-    if (libraryCategory && (tpl.category || "") !== libraryCategory) return false;
+  const rows = allTemplates().filter((tpl) => {
+    if (librarySections.size && !librarySections.has(tpl.section)) return false;
+    if (libraryCategories.size && !libraryCategories.has(tpl.category)) return false;
+    if (libraryDurations.size && !libraryDurations.has(band(tpl.minutes))) return false;
     if (!q) return true;
     return String(tpl.label || "").toLowerCase().includes(q)
         || String(tpl.category || "").toLowerCase().includes(q)
         || String(tpl.section || "").toLowerCase().includes(q);
   });
-  rows = rows.slice().sort((a, b) => {
+  rows.sort((a, b) => {
     if (librarySort === "duration") return (a.minutes || 0) - (b.minutes || 0);
     if (librarySort === "category")
       return String(a.category || "").localeCompare(String(b.category || ""))
           || String(a.label || "").localeCompare(String(b.label || ""));
     return String(a.label || "").localeCompare(String(b.label || ""));
   });
-  if (!rows.length) {
-    box.append(makeEl("p", "No matches.", "hint"));
-    return;
+  return rows;
+}
+
+// Numbered pager: ‹ Prev  1 2 [3] … N  Next ›. Renders nothing when there's only one page.
+function renderLibraryPager(pageCount) {
+  const box = $("library-pager");
+  if (!box || pageCount <= 1) return;
+  const pageBtn = (label, page, opts = {}) => {
+    const b = makeEl("button", label, "lib-page" + (opts.active ? " active" : ""));
+    b.type = "button";
+    if (opts.disabled) b.disabled = true;
+    else b.onclick = () => { libraryPage = page; renderLibraryList(); };
+    return b;
+  };
+  box.append(pageBtn("‹ Prev", libraryPage - 1, { disabled: libraryPage <= 0 }));
+  for (const p of pageWindow(libraryPage, pageCount)) {
+    if (p === "…") box.append(makeEl("span", "…", "lib-page-gap"));
+    else box.append(pageBtn(String(p + 1), p, { active: p === libraryPage }));
   }
-  // Recently-used strip (only when not actively searching, so it doesn't crowd results).
-  const recentTpls = (!q && recents.length)
-    ? recents.map((label) => allTemplates().find((t) => t.label === label)).filter(Boolean)
-    : [];
-  if (recentTpls.length) {
-    box.append(makeEl("div", "Recent", "lib-group-head"));
-    const rfrag = document.createDocumentFragment();
-    for (const tpl of recentTpls) rfrag.append(libRowEl(tpl));
-    box.append(rfrag);
+  box.append(pageBtn("Next ›", libraryPage + 1, { disabled: libraryPage >= pageCount - 1 }));
+}
+
+// Which page indices to show: first, last, and current±1, with "…" gaps between jumps.
+function pageWindow(cur, pageCount) {
+  const keep = new Set([0, pageCount - 1, cur, cur - 1, cur + 1]);
+  const ps = [...keep].filter((p) => p >= 0 && p < pageCount).sort((a, b) => a - b);
+  const out = [];
+  let prev = -1;
+  for (const p of ps) {
+    if (p - prev > 1) out.push("…");
+    out.push(p);
+    prev = p;
   }
-  // Sticky column header (re-added each render so it stays pinned atop the scroll box).
-  const head = document.createElement("div");
-  head.className = "lib-row lib-head";
-  for (const t of ["", "Name", "Category", "Section", "Dur", ""]) head.append(makeEl("span", t));
-  box.append(head);
-  // Cap rendered rows; build into a fragment and append once.
-  const shown = rows.slice(0, LIB_CAP);
-  const frag = document.createDocumentFragment();
-  for (const tpl of shown) frag.append(libRowEl(tpl));
-  box.append(frag);
-  if (rows.length > shown.length) {
-    box.append(makeEl("p", `Showing ${shown.length} of ${rows.length} — refine your search.`, "hint lib-cap-note"));
-  }
+  return out;
 }
 // "Sleep 8h" -> "sleep_8h"-ish: lowercase, non-word -> "_", trimmed; fallback "activity".
 function slug(label) {
@@ -1061,10 +1212,27 @@ function drawTimeline(schedule, stale) {
   const g = buildGantt(schedule);
   if (stale) g.classList.add("gantt-stale");
   else renderTightness(g, schedule);
-  tl.append(g);
+  applyZoomTo(g); // size to the current X (time) / Y (row height) zoom
+  const scroll = document.createElement("div");
+  scroll.className = "gantt-scroll"; // scrolls horizontally when zoomed in past the panel width
+  scroll.append(g);
+  tl.append(scroll);
   const leg = buildLegend();
   if (leg) tl.append(leg);
   renderRoster(); // refresh solved times + the selected-row highlight after every redraw
+}
+
+// Apply the current zoom to a gantt element: X widens it past the panel (so .gantt-scroll scrolls),
+// Y scales lane height via a CSS var. Pure presentation — never re-solves.
+function applyZoomTo(g) {
+  if (!g) return;
+  g.style.width = 100 * zoomX + "%";
+  g.style.setProperty("--zoom-y", zoomY);
+  g.classList.toggle("gantt-zoomed", zoomX > 1.001); // pin the row labels only once it scrolls
+}
+// Re-apply zoom to the timeline already on screen (called live while dragging the sliders).
+function applyZoom() {
+  applyZoomTo($("timeline").querySelector(".gantt"));
 }
 
 // A small legend of the activity types currently in use (color swatch -> label).

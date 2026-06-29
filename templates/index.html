@@ -69,6 +69,17 @@
           <div class="result-head">
             <h2>Timeline</h2>
             <div class="result-actions">
+              <div class="zoom-controls" role="group" aria-label="Timeline zoom">
+                <label class="zoom-ctl" title="Zoom the time axis (horizontal)">
+                  <span class="zoom-ico" aria-hidden="true">↔</span>
+                  <input type="range" id="zoom-x" min="1" max="12" step="0.5" value="1" aria-label="Horizontal (time) zoom" />
+                </label>
+                <label class="zoom-ctl" title="Zoom the row height (vertical)">
+                  <span class="zoom-ico" aria-hidden="true">↕</span>
+                  <input type="range" id="zoom-y" min="0.8" max="3" step="0.1" value="1" aria-label="Vertical (row height) zoom" />
+                </label>
+                <button type="button" id="zoom-reset" class="btn btn-ghost btn-sm" title="Reset zoom to fit">Fit</button>
+              </div>
               <button type="button" id="view-toggle" class="btn btn-ghost btn-sm">Overview</button>
               <span id="status" class="pill" aria-live="polite"></span>
             </div>
@@ -79,36 +90,56 @@
       </div>
     </div>
 
-    <!-- Browse Library: a wide, searchable catalog of activity templates (filled in by app.js) -->
+    <!-- Browse Library: a "storefront" catalog — filter rail + card grid (filled in by app.js) -->
     <div id="library-modal" class="modal-backdrop" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Library">
+      <div class="modal modal-library" role="dialog" aria-modal="true" aria-label="Activity Library">
         <div class="modal-head">
-          <h2 class="modal-title">Library</h2>
+          <h2 class="modal-title">Activity Library</h2>
           <input id="library-search" class="select modal-search" type="search"
-                 placeholder="Search templates…" aria-label="Search templates" />
-          <select id="library-sort" class="select select-sm" aria-label="Sort">
-            <option value="name">Name</option>
-            <option value="duration">Duration</option>
-            <option value="category">Category</option>
-          </select>
-          <button type="button" id="library-export" class="btn btn-ghost btn-sm">Export</button>
-          <button type="button" id="library-import" class="btn btn-ghost btn-sm">Import</button>
-          <input type="file" id="library-import-file" accept="application/json,.json" hidden />
+                 placeholder="Search activities…" aria-label="Search activities" />
           <button type="button" id="library-close" class="modal-close" aria-label="Close library">×</button>
         </div>
-        <div id="library-chips" class="lib-chips" role="group" aria-label="Filter by category"></div>
-        <!-- "+ New": author a template straight into the Library (persisted in localStorage) -->
-        <div class="lib-new-row">
-          <input id="lib-new-name" class="select" type="text" placeholder="New activity name…" aria-label="New template name" />
-          <input id="lib-new-min" class="select select-sm" type="number" min="1" step="1" value="30" aria-label="Duration (minutes)" />
-          <input id="lib-new-cat" class="select select-sm" type="text" list="lib-cat-options" placeholder="Category (optional)" aria-label="Category" />
-          <datalist id="lib-cat-options"></datalist>
-          <input id="lib-new-color" class="lib-new-color" type="color" value="#4f46e5" aria-label="Category color" title="Category color" />
-          <input id="lib-new-section" class="select select-sm" type="text" list="lib-sec-options" placeholder="Section (optional)" aria-label="Default section" />
-          <datalist id="lib-sec-options"></datalist>
-          <button type="button" id="lib-new-add" class="btn btn-sm btn-primary">Add to Library</button>
+        <!-- active-filter pills (removable) + Clear all -->
+        <div id="library-pills" class="lib-pills" role="group" aria-label="Active filters"></div>
+        <div class="lib-body">
+          <!-- LEFT RAIL: facet groups (built by app.js) + "+ New" authoring + Export/Import -->
+          <aside class="lib-rail">
+            <div id="library-facets"></div>
+            <div class="lib-new">
+              <div class="lib-new-title">+ New activity</div>
+              <input id="lib-new-name" class="select" type="text" placeholder="Name…" aria-label="New template name" />
+              <div class="lib-new-line">
+                <input id="lib-new-min" class="select select-sm" type="number" min="1" step="1" value="30" aria-label="Duration (minutes)" />
+                <input id="lib-new-color" class="lib-new-color" type="color" value="#4f46e5" aria-label="Category color" title="Category color" />
+              </div>
+              <input id="lib-new-cat" class="select select-sm" type="text" list="lib-cat-options" placeholder="Category (optional)" aria-label="Category" />
+              <datalist id="lib-cat-options"></datalist>
+              <input id="lib-new-section" class="select select-sm" type="text" list="lib-sec-options" placeholder="Section (optional)" aria-label="Default section" />
+              <datalist id="lib-sec-options"></datalist>
+              <button type="button" id="lib-new-add" class="btn btn-sm btn-primary">Add to Library</button>
+            </div>
+            <div class="lib-rail-io">
+              <button type="button" id="library-export" class="btn btn-ghost btn-sm">Export</button>
+              <button type="button" id="library-import" class="btn btn-ghost btn-sm">Import</button>
+              <input type="file" id="library-import-file" accept="application/json,.json" hidden />
+            </div>
+          </aside>
+          <!-- RIGHT: count + sort, the card grid, and numbered pages -->
+          <div class="lib-content">
+            <div class="lib-content-head">
+              <span id="library-count" class="lib-count"></span>
+              <div class="lib-sort" role="group" aria-label="Sort">
+                <button type="button" class="lib-sort-btn" data-sort="name">Name</button>
+                <button type="button" class="lib-sort-btn" data-sort="duration">Dur</button>
+                <button type="button" class="lib-sort-btn" data-sort="category">Cat</button>
+              </div>
+            </div>
+            <div id="library-list" class="lib-cards"></div>
+            <div id="library-pager" class="lib-pager"></div>
+          </div>
         </div>
-        <div id="library-list" class="modal-list"></div>
+        <!-- fill tray: how full the plan is vs the horizon, live as you add -->
+        <div id="library-tray" class="lib-tray"></div>
       </div>
     </div>
 
