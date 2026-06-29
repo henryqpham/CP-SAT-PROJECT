@@ -413,20 +413,33 @@ select:focus {
   font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 0.3rem;
 }
 .modal-close:hover { color: var(--bad); }
-.modal-list { overflow-y: auto; padding: 0.5rem 1.1rem 1rem; }
+.modal-list { overflow-y: auto; padding: 0 1.1rem 1rem; }
+/* aligned grid columns: swatch · name · category · section · duration · actions */
 .lib-row {
-  display: flex; align-items: center; gap: 0.7rem;
-  padding: 0.45rem 0.2rem; border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 0.85rem minmax(0, 1fr) 7rem 6rem 3.5rem auto;
+  align-items: center; gap: 0.6rem;
+  padding: 0.28rem 0.3rem; border-bottom: 1px solid var(--border);
 }
-.lib-row:last-child { border-bottom: none; }
-.lib-row-swatch { width: 0.75rem; height: 0.75rem; border-radius: 3px; flex: 0 0 auto; }
-.lib-row-name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-row:hover { background: var(--track); }
+/* sticky column header pinned to the top of the scroll box */
+.lib-head {
+  position: sticky; top: 0; z-index: 1; background: var(--surface);
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted);
+}
+.lib-head:hover { background: var(--surface); }
+.lib-row-swatch { width: 0.75rem; height: 0.75rem; border-radius: 3px; }
+.lib-row-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-row-cat {
   font-size: 0.66rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
-  color: var(--muted); background: var(--track); border-radius: 999px; padding: 0.1rem 0.5rem; white-space: nowrap;
+  color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.lib-row-dur { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; min-width: 3rem; text-align: right; }
+.lib-row-sec { color: var(--muted); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-row-dur { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; text-align: right; }
+.lib-row-actions { display: flex; align-items: center; gap: 0.4rem; justify-content: flex-end; }
 .lib-row-add { background: var(--accent); color: #fff; flex: 0 0 auto; }
+.lib-cap-note { text-align: center; }
 
 /* "+ New" authoring row in the modal (sits above the scrolling list) */
 .lib-new-row {

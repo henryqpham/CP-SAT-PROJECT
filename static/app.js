@@ -63,17 +63,16 @@ $("example-select").onchange = async (e) => {
   }
 };
 
-// "+ Activity": append a new activity (default 30 min) to the plan; CP-SAT places it, the Inspector edits it.
-$("add-activity").onclick = () => {
-  scenario.activities.push({ id: uniqueActivityId("activity"), duration: 30, section: null });
-  render();
-};
-
 // Browse Library modal: open/close + live search/filter/sort (none of these re-solve).
 $("browse-library").onclick = openLibrary;
 $("library-close").onclick = closeLibrary;
 $("library-modal").onclick = (e) => { if (e.target === $("library-modal")) closeLibrary(); }; // backdrop click
-$("library-search").oninput = (e) => { librarySearch = e.target.value; renderLibraryList(); };
+let libSearchTimer = null;
+$("library-search").oninput = (e) => {
+  librarySearch = e.target.value;
+  clearTimeout(libSearchTimer);
+  libSearchTimer = setTimeout(renderLibraryList, 120); // debounce so 600 rows don't rebuild per keystroke
+};
 $("library-filter").onchange = (e) => { libraryCategory = e.target.value; renderLibraryList(); };
 $("library-sort").onchange = (e) => { librarySort = e.target.value; renderLibraryList(); };
 document.addEventListener("keydown", (e) => {
@@ -136,9 +135,28 @@ function solveNow() {
 // Live auto-solve: re-solve ~250ms after the last edit (trailing debounce).
 let solveTimer = null;
 function scheduleSolve() {
-  if (!scenario.activities.length) return;
   clearTimeout(solveTimer);
+  // No activities to solve (e.g. you just deleted the last one). There's nothing to draw, so
+  // clear the timeline + health instead of leaving the previous solve's bars on screen.
+  if (!scenario.activities.length) {
+    clearResult();
+    return;
+  }
   solveTimer = setTimeout(() => solveNow(), 250);
+}
+
+// Wipe the result UI back to its empty state: no timeline, no health strip, no status pill, and
+// forget the last good schedule so a fresh plan doesn't show a stale "last good plan".
+function clearResult() {
+  lastFeasibleSchedule = null;
+  shownSchedule = null;
+  shownStale = false;
+  $("timeline").innerHTML = "";
+  $("health").hidden = true;
+  $("banner").hidden = true;
+  const pill = $("status");
+  pill.textContent = "";
+  pill.className = "pill";
 }
 
 $("add-constraint").onclick = () => {
@@ -398,7 +416,7 @@ function renderRoster() {
   if (!box) return;
   box.innerHTML = "";
   if (!scenario.activities.length) {
-    box.append(makeEl("p", "No activities yet — add one with + Activity.", "hint"));
+    box.append(makeEl("p", "No activities yet — add some from Browse Library.", "hint"));
     return;
   }
   for (const a of scenario.activities) {
@@ -426,6 +444,7 @@ function renderRoster() {
     });
     x.classList.add("roster-del");
     row.append(x);
+    box.append(row);
   }
 }
 
@@ -564,7 +583,51 @@ function rebuildLibraryFilter() {
   }
 }
 
-// Filter + sort LIBRARY by the current search/category/sort state and draw the rows.
+// Build one aligned grid row for a template (swatch · name · category · section · dur · actions).
+function libRowEl(tpl) {
+  const row = document.createElement("div");
+  row.className = "lib-row";
+  const sw = makeEl("span", "", "lib-row-swatch");
+  sw.style.background = (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)";
+  row.append(sw);
+  row.append(makeEl("span", tpl.label, "lib-row-name"));
+  row.append(makeEl("span", (TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category || "", "lib-row-cat"));
+  row.append(makeEl("span", tpl.section || "", "lib-row-sec"));
+  row.append(makeEl("span", dur(tpl.minutes), "lib-row-dur"));
+  const actions = makeEl("span", "", "lib-row-actions");
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "btn btn-sm lib-row-add";
+  add.textContent = "+ Add";
+  add.onclick = () => {
+    scenario.activities.push({
+      id: uniqueActivityId(slug(tpl.label)),
+      duration: tpl.minutes,
+      section: tpl.section || null,
+      type: tpl.category,
+    });
+    render(); // roster + (debounced) timeline update; modal stays open
+  };
+  actions.append(add);
+  // User-saved templates get a "saved" tag + a × to remove; seed (library.json) rows don't.
+  if (customTemplates.includes(tpl)) {
+    actions.append(makeEl("span", "saved", "lib-row-saved"));
+    const rm = deleteBtn(() => {
+      const i = customTemplates.indexOf(tpl);
+      if (i > -1) customTemplates.splice(i, 1);
+      saveTemplates();
+      renderLibraryList();
+    });
+    rm.title = "Remove saved template";
+    actions.append(rm);
+  }
+  row.append(actions);
+  return row;
+}
+
+// Filter + sort the catalog and draw it as an aligned grid with a sticky column header. Search-first
+// + a render cap (LIB_CAP) keep it fast at ~600 templates — real queries narrow it instantly.
+const LIB_CAP = 200;
 function renderLibraryList() {
   rebuildLibraryFilter();
   const box = $("library-list");
@@ -578,7 +641,8 @@ function renderLibraryList() {
     if (libraryCategory && (tpl.category || "") !== libraryCategory) return false;
     if (!q) return true;
     return String(tpl.label || "").toLowerCase().includes(q)
-        || String(tpl.category || "").toLowerCase().includes(q);
+        || String(tpl.category || "").toLowerCase().includes(q)
+        || String(tpl.section || "").toLowerCase().includes(q);
   });
   rows = rows.slice().sort((a, b) => {
     if (librarySort === "duration") return (a.minutes || 0) - (b.minutes || 0);
@@ -591,44 +655,18 @@ function renderLibraryList() {
     box.append(makeEl("p", "No matches.", "hint"));
     return;
   }
-  for (const tpl of rows) {
-    const row = document.createElement("div");
-    row.className = "lib-row";
-    const sw = makeEl("span", "", "lib-row-swatch");
-    sw.style.background = (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)";
-    row.append(sw);
-    row.append(makeEl("span", tpl.label, "lib-row-name"));
-    const meta = [(TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category, tpl.section]
-      .filter(Boolean).join(" · ") || "—";
-    row.append(makeEl("span", meta, "lib-row-cat"));
-    row.append(makeEl("span", dur(tpl.minutes), "lib-row-dur"));
-    const add = document.createElement("button");
-    add.type = "button";
-    add.className = "btn btn-sm lib-row-add";
-    add.textContent = "+ Add";
-    add.onclick = () => {
-      scenario.activities.push({
-        id: uniqueActivityId(slug(tpl.label)),
-        duration: tpl.minutes,
-        section: tpl.section || null,
-        type: tpl.category,
-      });
-      render(); // roster + (debounced) timeline update; modal stays open
-    };
-    row.append(add);
-    // User-saved templates get a "saved" tag + a × to remove; seed (library.json) rows don't.
-    if (customTemplates.includes(tpl)) {
-      row.append(makeEl("span", "saved", "lib-row-saved"));
-      const rm = deleteBtn(() => {
-        const i = customTemplates.indexOf(tpl);
-        if (i > -1) customTemplates.splice(i, 1);
-        saveTemplates();
-        renderLibraryList();
-      });
-      rm.title = "Remove saved template";
-      row.append(rm);
-    }
-    box.append(row);
+  // Sticky column header (re-added each render so it stays pinned atop the scroll box).
+  const head = document.createElement("div");
+  head.className = "lib-row lib-head";
+  for (const t of ["", "Name", "Category", "Section", "Dur", ""]) head.append(makeEl("span", t));
+  box.append(head);
+  // Cap rendered rows; build into a fragment and append once.
+  const shown = rows.slice(0, LIB_CAP);
+  const frag = document.createDocumentFragment();
+  for (const tpl of shown) frag.append(libRowEl(tpl));
+  box.append(frag);
+  if (rows.length > shown.length) {
+    box.append(makeEl("p", `Showing ${shown.length} of ${rows.length} — refine your search.`, "hint lib-cap-note"));
   }
 }
 // "Sleep 8h" -> "sleep_8h"-ish: lowercase, non-word -> "_", trimmed; fallback "activity".

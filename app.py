@@ -15,6 +15,9 @@ from parse import parse_sentence  # noqa: E402
 from solver import solve  # noqa: E402
 
 app = Flask(__name__)
+# Dev: don't let the browser cache static JS/CSS, so code edits show on a normal refresh
+# (avoids the "I fixed it but the page still shows the old behavior" stale-cache trap).
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
 @app.get("/")
