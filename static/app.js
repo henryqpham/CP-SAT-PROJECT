@@ -500,12 +500,12 @@ function renderRoster() {
     const s = shownSchedule && shownSchedule.find((x) => x.id === a.id);
     row.append(makeEl("span", s ? `${timeLabel(s.start)}–${timeLabel(s.end)}` : "—", "roster-time"));
     // Same as the timeline bar: re-highlight + open the Inspector, never re-solve.
-    row.onclick = () => {
+    onActivate(row, () => {
       selectedId = a.id;
       drawTimeline(shownSchedule, shownStale);
       renderInspector();
       openInspector();
-    };
+    });
     const x = deleteBtn((e) => {
       e.stopPropagation(); // don't also select the row
       const i = scenario.activities.findIndex((y) => y.id === a.id);
@@ -1307,11 +1307,11 @@ function sectionHeaderRow(sec, items, isOpen, tight, pct) {
   label.append(makeEl("span", String(items.length), "sec-count"));
   if (tight) label.append(makeEl("span", "⚠", "sec-warn"));
   label.title = `${sec} — ${items.length} task(s)` + (isOpen ? "" : " (click to expand)");
-  label.onclick = () => {
+  onActivate(label, () => {
     if (collapsed.has(sec)) collapsed.delete(sec);
     else collapsed.add(sec);
     drawTimeline(shownSchedule, shownStale);
-  };
+  });
   row.append(label);
 
   const track = document.createElement("div");
@@ -1350,12 +1350,12 @@ function activityRow(item, pct) {
   bar.append(makeEl("span", `${timeLabel(item.start)}–${timeLabel(item.end)}`, "bar-time"));
   // Select this activity: re-highlight + open the Inspector from the schedule on hand.
   // Nothing in the scenario changed, so we redraw + refresh — never re-solve.
-  bar.onclick = () => {
+  onActivate(bar, () => {
     selectedId = item.id;
     drawTimeline(shownSchedule, shownStale);
     renderInspector();
     openInspector();
-  };
+  });
   track.append(bar);
   row.append(track);
   return row;
@@ -1626,4 +1626,16 @@ function makeEl(tag, text, cls) {
   e.textContent = text;
   if (cls) e.className = cls;
   return e;
+}
+
+// Make a non-button element (timeline bar, roster row, section header) behave like a button:
+// click + keyboard (Enter/Space) + focusable, so it's reachable without a mouse.
+function onActivate(el, fn) {
+  el.tabIndex = 0;
+  el.setAttribute("role", "button");
+  el.onclick = fn;
+  el.onkeydown = (e) => {
+    if (e.target !== el) return; // let child controls (e.g. the × delete button) handle their own keys
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); }
+  };
 }
