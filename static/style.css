@@ -436,6 +436,8 @@ select:focus {
 .lib-new-row #lib-new-name { flex: 1; min-width: 10rem; }
 .lib-new-row #lib-new-min { width: 5rem; }
 .lib-new-row #lib-new-cat { width: 9rem; }
+.lib-new-row #lib-new-section { width: 9rem; }
+.lib-new-color { width: 2.2rem; height: 2rem; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; flex: 0 0 auto; }
 /* "saved" tag on user-authored templates */
 .lib-row-saved {
   font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;

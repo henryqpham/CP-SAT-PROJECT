@@ -24,6 +24,9 @@ const DAY = 24 * 60;
 // An activity with no type (or a type the library doesn't define) falls back to the neutral
 // bar color from the stylesheet — there is no color data hardcoded here.
 let TYPES = {};
+// User-defined category styling (color + icon), persisted in localStorage and merged onto TYPES.
+let customTypes = {};
+const TYPES_KEY = "planner.types.v1";
 const colorFor = (id) => {
   const a = scenario.activities.find((x) => x.id === id);
   if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
@@ -77,26 +80,42 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("library-modal").hidden) closeLibrary();
 });
 
-// "+ New": author a template straight into the Library (persisted in localStorage).
+// "+ New": author a template straight into the Library (persisted in localStorage). A template is
+// { label, minutes, category, section }; a category carries its color + icon (in customTypes/TYPES).
 function addCustomTemplate() {
   const name = $("lib-new-name").value.trim();
   const minutes = parseInt($("lib-new-min").value, 10);
   const cat = $("lib-new-cat").value.trim();
+  const section = $("lib-new-section").value.trim();
   if (!name) { $("lib-new-name").focus(); return; }
   if (!Number.isInteger(minutes) || minutes < 1) { $("lib-new-min").focus(); return; }
-  const tpl = { label: name, category: cat || null, minutes };
+  // A category carries the color + icon; define/update it so bars, the legend, and rows pick it up.
+  if (cat) {
+    const styled = { label: cat, color: $("lib-new-color").value };
+    customTypes[cat] = styled;
+    TYPES[cat] = styled;
+    saveTypes();
+  }
+  const tpl = { label: name, minutes, category: cat || null, section: section || null };
   const i = customTemplates.findIndex((t) => String(t.label).toLowerCase() === name.toLowerCase());
   if (i > -1) customTemplates[i] = tpl;
   else customTemplates.push(tpl);
   saveTemplates();
   $("lib-new-name").value = "";
   $("lib-new-cat").value = "";
+  $("lib-new-section").value = "";
   $("lib-new-min").value = "30";
   renderLibraryList();
   $("lib-new-name").focus();
 }
+// Typing a known category prefills its color + icon (so you edit, not overwrite, its styling).
+function syncNewTypeStyle() {
+  const t = TYPES[$("lib-new-cat").value.trim()];
+  if (t && t.color) $("lib-new-color").value = t.color;
+}
 $("lib-new-add").onclick = addCustomTemplate;
 $("lib-new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addCustomTemplate(); });
+$("lib-new-cat").addEventListener("input", syncNewTypeStyle);
 
 // The scenario the SOLVER sees — strips front-end-only fields (e.g. `horizon`, a soft planning
 // budget used only by the capacity bar) so they're never sent to /solve.
@@ -137,6 +156,7 @@ $("sentence").addEventListener("keydown", (e) => {
 (async () => {
   await loadLibrary();
   loadTemplates();
+  loadTypes();
   if (loadTabs()) {
     scenario = clone(tabs[activeTab].scenario);
   } else {
@@ -466,6 +486,23 @@ function saveTemplates() {
     /* storage unavailable — skip persistence */
   }
 }
+// User-defined category styling (color + icon): persisted, then merged onto TYPES (over file types).
+function loadTypes() {
+  try {
+    const data = JSON.parse(localStorage.getItem(TYPES_KEY));
+    customTypes = data && typeof data === "object" ? data : {};
+  } catch {
+    customTypes = {};
+  }
+  Object.assign(TYPES, customTypes);
+}
+function saveTypes() {
+  try {
+    localStorage.setItem(TYPES_KEY, JSON.stringify(customTypes));
+  } catch {
+    /* storage unavailable — skip persistence */
+  }
+}
 // The catalog = file (library.json) templates + the user's saved ones. Keep the SAME element
 // references (no per-item copy) so customTemplates.includes(tpl) works for the remove button.
 function allTemplates() {
@@ -512,6 +549,19 @@ function rebuildLibraryFilter() {
       dl.append(o);
     }
   }
+  // section suggestions: distinct sections from templates + the current plan
+  const secDl = $("lib-sec-options");
+  if (secDl) {
+    const secs = new Set();
+    for (const tpl of allTemplates()) if (tpl.section) secs.add(tpl.section);
+    for (const a of scenario.activities) if (a.section) secs.add(a.section);
+    secDl.innerHTML = "";
+    for (const s of [...secs].sort((a, b) => a.localeCompare(b))) {
+      const o = document.createElement("option");
+      o.value = s;
+      secDl.append(o);
+    }
+  }
 }
 
 // Filter + sort LIBRARY by the current search/category/sort state and draw the rows.
@@ -548,7 +598,9 @@ function renderLibraryList() {
     sw.style.background = (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)";
     row.append(sw);
     row.append(makeEl("span", tpl.label, "lib-row-name"));
-    row.append(makeEl("span", (TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category || "—", "lib-row-cat"));
+    const meta = [(TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category, tpl.section]
+      .filter(Boolean).join(" · ") || "—";
+    row.append(makeEl("span", meta, "lib-row-cat"));
     row.append(makeEl("span", dur(tpl.minutes), "lib-row-dur"));
     const add = document.createElement("button");
     add.type = "button";
@@ -558,7 +610,7 @@ function renderLibraryList() {
       scenario.activities.push({
         id: uniqueActivityId(slug(tpl.label)),
         duration: tpl.minutes,
-        section: null,
+        section: tpl.section || null,
         type: tpl.category,
       });
       render(); // roster + (debounced) timeline update; modal stays open
