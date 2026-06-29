@@ -16,7 +16,8 @@ app and how CP-SAT works.
 
 ## Status
 
-A single-day manual base is working; the full MVP is being built on top of it.
+A manual base is working — and the schedule now spans a custom **multi-day horizon**, not just one
+day. The rest of the MVP (document ingest, fill objective) is being built on top of it.
 
 **The MVP (the goal):** drop in a large document → a local Ollama model parses it into many
 activities, each with its own constraints → pick which to add → schedule them across a **multi-day,
@@ -26,14 +27,17 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 
 **Working today (the base):**
 
-- The CP-SAT solver (single-day for now) + the editable JSON IR and its 5 constraint types.
-- The timeline (Gantt), the "On this plan" roster, and the searchable Library (with "+ New").
+- The CP-SAT solver — schedules across a custom **horizon** (one 24h day by default, or several
+  days) + the editable JSON IR and its 5 constraint types.
+- The timeline (Gantt) — a fitted single-day view, or a multi-day view with per-day markers — plus
+  the "On this plan" roster and the searchable Library (with "+ New").
+- A capacity health bar (used vs. your horizon: over / under / time left).
 - Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
 
 **Next, toward the MVP (not paused — the actual target):**
 
-- Multi-day / custom-horizon scheduling + a capacity ("over / under / time left") health bar.
 - Document ingest + local-Ollama parsing into activities & constraints (re-activates `/parse`).
+- A fill / utilization objective so the solver packs the window (the North-Star "fill").
 - The crew / section model so many sections pack in parallel.
 - Prior art for multi-day + `.docx` ingest lives on `archive/advanced-multiday-classifier` — revive it.
 
@@ -63,7 +67,7 @@ flowchart LR
 
     subgraph FLASK["Flask app (app.py)"]
         direction TB
-        SOLVE["/solve<br/>CP-SAT"]
+        SOLVE["/solve<br/>CP-SAT (horizon-bounded)"]
         EXAMPLE["/example<br/>demo IR"]
         MODELS["models.py<br/>Pydantic IR"]
         PARSE["/parse<br/>(dormant — AI off)"]
@@ -84,7 +88,7 @@ rule, watch it react — in any order.
 CP-SAT-PROJECT/
 ├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
 ├── models.py            # Pydantic IR: Activity (+ section) + constraint union — the JSON contract
-├── solver.py            # Scenario -> CP-SAT -> schedule (single-day); each section becomes a one-at-a-time resource
+├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
 ├── examples/lake.json   # hand-written IR to test /solve without any AI
 ├── templates/index.html
@@ -116,8 +120,9 @@ An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP)
 (they can't overlap), which is what makes the what-if real: drop a second task into a busy section
 and watch the timeline stretch or go red.
 
-Activities run free across the full 24h day; per-activity `time_window` constraints are what pin
-them down. Full example in `examples/lake.json`:
+Activities run free across the planning **horizon** — one 24h day by default, or set
+`"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity
+`time_window` constraints are what pin them down. Full example in `examples/lake.json`:
 
 ```jsonc
 {

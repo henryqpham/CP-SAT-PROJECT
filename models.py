@@ -74,6 +74,17 @@ Constraint = Annotated[
 class Scenario(BaseModel):
     activities: list[Activity]
     constraints: list[Constraint]
+    # Planning window in minutes. None = one 24h day (1440), the default single-day
+    # plan. Set it bigger (e.g. 2880 = 2 days) and the solver places activities
+    # across the whole window, not just one day.
+    horizon: Optional[int] = None
+
+    @field_validator("horizon")
+    @classmethod
+    def _check_horizon(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v <= 0:
+            raise ValueError("horizon must be a positive number of minutes")
+        return v
 
     @model_validator(mode="after")
     def _fill_ids(self):

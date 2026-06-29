@@ -272,6 +272,16 @@ select:focus {
     transparent 1px calc(100% / 8)
   );
 }
+/* multi-day timeline: drop the decorative 1/8 grid; day boundaries are the only lines that matter */
+.gantt-multi .lane { background-image: none; }
+.day-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--border);
+  pointer-events: none;
+}
 .tick-label { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-size: 0.68rem; }
 .bar {
   position: absolute;

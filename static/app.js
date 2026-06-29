@@ -20,6 +20,9 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
+// The horizon (planning window, minutes) the solver actually used on the last solve. Drives
+// whether the timeline draws a single day or a multi-day view. Defaults to one day.
+let solvedHorizon = DAY;
 // Activity types -> bar color + legend label, loaded from /static/library.json at startup.
 // An activity with no type (or a type the library doesn't define) falls back to the neutral
 // bar color from the stylesheet — there is no color data hardcoded here.
@@ -121,11 +124,11 @@ $("lib-new-add").onclick = addCustomTemplate;
 $("lib-new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addCustomTemplate(); });
 $("lib-new-cat").addEventListener("input", syncNewTypeStyle);
 
-// The scenario the SOLVER sees — strips front-end-only fields (e.g. `horizon`, a soft planning
-// budget used only by the capacity bar) so they're never sent to /solve.
+// The scenario the SOLVER sees. `horizon` (the planning window in minutes) is now a real solver
+// bound, so we send the whole scenario. Extra UI-only keys (e.g. an activity's `type` for color)
+// are harmless — the IR ignores fields it doesn't define.
 function solvePayload() {
-  const { horizon, ...rest } = scenario;
-  return rest;
+  return scenario;
 }
 
 // Solve the current in-memory scenario and draw the timeline. Reused by the
@@ -156,6 +159,7 @@ function clearResult() {
   lastFeasibleSchedule = null;
   shownSchedule = null;
   shownStale = false;
+  solvedHorizon = DAY;
   $("timeline").innerHTML = "";
   $("health").hidden = true;
   $("banner").hidden = true;
@@ -434,7 +438,7 @@ function renderRoster() {
     row.append(makeEl("span", a.id, "roster-name"));
     row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
     const s = shownSchedule && shownSchedule.find((x) => x.id === a.id);
-    row.append(makeEl("span", s ? `${hhmm(s.start)}–${hhmm(s.end)}` : "—", "roster-time"));
+    row.append(makeEl("span", s ? `${timeLabel(s.start)}–${timeLabel(s.end)}` : "—", "roster-time"));
     // Same as the timeline bar: re-highlight + open the Inspector, never re-solve.
     row.onclick = () => {
       selectedId = a.id;
@@ -811,7 +815,7 @@ function renderInspector() {
 
   // Optional read-only solved start–end from the schedule currently drawn.
   const solved = shownSchedule && shownSchedule.find((s) => s.id === act.id);
-  if (solved) box.append(makeEl("div", `Scheduled ${hhmm(solved.start)}–${hhmm(solved.end)}`, "insp-solved"));
+  if (solved) box.append(makeEl("div", `Scheduled ${timeLabel(solved.start)}–${timeLabel(solved.end)}`, "insp-solved"));
 
   const del = deleteBtn(() => {
     const i = scenario.activities.findIndex((a) => a.id === act.id);
@@ -920,6 +924,7 @@ function renderResult(result) {
 
   if (status === "OPTIMAL" || status === "FEASIBLE") {
     if (result.schedule && result.schedule.length) {
+      solvedHorizon = result.horizon || DAY; // size the timeline to what the solver used
       lastFeasibleSchedule = result.schedule;
       renderHealth(status, result.schedule, false);
       drawTimeline(result.schedule, false);
@@ -1039,7 +1044,7 @@ function renderHealth(status, schedule, stale) {
     if (Number.isFinite(h) && h > 0) {
       scenario.horizon = Math.round(h * 60);
       saveTabs();
-      renderHealth(status, schedule, stale);
+      scheduleSolve(); // horizon is a real solver bound now — re-solve so the plan + timeline update
     }
   };
   strip.append(chip);
@@ -1066,7 +1071,7 @@ function renderHealth(status, schedule, stale) {
         ? makeEl("span", "OVER by " + dur(span - horizon), "health-stat health-over")
         : makeEl("span", dur(horizon - span) + " left", "health-stat")
     );
-    strip.append(makeEl("span", "finishes " + hhmm(hi), "health-stat"));
+    strip.append(makeEl("span", "finishes " + timeLabel(hi), "health-stat"));
     const tight = schedule.filter((s) => isTight(s, caps)).length;
     strip.append(makeEl("span", tight + " tight", "health-stat"));
     if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
@@ -1075,7 +1080,13 @@ function renderHealth(status, schedule, stale) {
   }
 }
 
+// Draw the timeline. A single-day plan keeps the original axis-fitted view; once the solved
+// horizon spans more than a day we switch to a multi-day view (one continuous axis, day markers).
 function buildGantt(schedule) {
+  return solvedHorizon > DAY ? buildGanttMulti(schedule) : buildGanttDay(schedule);
+}
+
+function buildGanttDay(schedule) {
   const g = document.createElement("div");
   g.className = "gantt";
 
@@ -1128,6 +1139,65 @@ function buildGantt(schedule) {
   return g;
 }
 
+// Multi-day timeline: one continuous axis from day 1 to the end of the horizon, with a "Day N"
+// marker per day. Bars are positioned as a fraction of the WHOLE horizon (not a fitted span), so a
+// day-2 activity sits in the day-2 stripe. Reuses the same section swimlanes as the single-day view.
+function buildGanttMulti(schedule) {
+  const horizon = solvedHorizon;
+  const totalDays = Math.ceil(horizon / DAY);
+  const pct = (min) => (100 * min) / horizon;
+
+  const g = document.createElement("div");
+  g.className = "gantt gantt-multi";
+
+  // Axis: a "Day N" marker at the start of each day.
+  const axis = document.createElement("div");
+  axis.className = "gantt-row gantt-axis";
+  axis.append(makeEl("div", "", "gantt-label"));
+  const axisTrack = document.createElement("div");
+  axisTrack.className = "gantt-track";
+  for (let d = 0; d < totalDays; d++) {
+    const tick = makeEl("span", "Day " + (d + 1), "tick-label");
+    tick.style.left = pct(d * DAY) + "%";
+    axisTrack.append(tick);
+  }
+  axis.append(axisTrack);
+  g.append(axis);
+
+  // Group into section swimlanes (same as the single-day view).
+  const sectionOf = (id) => {
+    const a = scenario.activities.find((x) => x.id === id);
+    return (a && a.section && a.section.trim()) || "Ungrouped";
+  };
+  const groups = new Map();
+  for (const item of schedule) {
+    const sec = sectionOf(item.id);
+    if (!groups.has(sec)) groups.set(sec, []);
+    groups.get(sec).push(item);
+  }
+  const caps = activityCaps();
+  for (const [sec, items] of groups) {
+    const isOpen = !collapsed.has(sec);
+    const tight = items.some((it) => isTight(it, caps));
+    g.append(sectionHeaderRow(sec, items, isOpen, tight, pct));
+    if (isOpen) {
+      [...items].sort((a, b) => a.start - b.start).forEach((item) => g.append(activityRow(item, pct)));
+    }
+  }
+
+  // Paint faint day separators behind every lane so the day stripes line up across all rows.
+  // Prepend so they sit under the bars, not over them.
+  for (const track of g.querySelectorAll(".gantt-track.lane")) {
+    for (let d = 1; d < totalDays; d++) {
+      const line = document.createElement("div");
+      line.className = "day-gridline";
+      line.style.left = pct(d * DAY) + "%";
+      track.prepend(line);
+    }
+  }
+  return g;
+}
+
 // A section header: caret + name + task count (+ ⚠ if any task is tight), with a rolled-up
 // summary bar spanning the section's busy window when collapsed. Clicking it toggles open/closed.
 function sectionHeaderRow(sec, items, isOpen, tight, pct) {
@@ -1157,7 +1227,7 @@ function sectionHeaderRow(sec, items, isOpen, tight, pct) {
     bar.className = "bar bar-summary" + (tight ? " bar-snug" : "");
     bar.style.left = pct(lo) + "%";
     bar.style.width = Math.max(0.8, pct(hi) - pct(lo)) + "%";
-    bar.title = `${sec}: ${hhmm(lo)}–${hhmm(hi)}, ${items.length} task(s)`;
+    bar.title = `${sec}: ${timeLabel(lo)}–${timeLabel(hi)}, ${items.length} task(s)`;
     bar.append(makeEl("span", `${items.length} tasks`, "bar-time"));
     track.append(bar);
   }
@@ -1180,8 +1250,8 @@ function activityRow(item, pct) {
   bar.style.left = pct(item.start) + "%";
   bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
   bar.style.background = colorFor(item.id);
-  bar.title = `${item.id}: ${hhmm(item.start)}–${hhmm(item.end)}`;
-  bar.append(makeEl("span", `${hhmm(item.start)}–${hhmm(item.end)}`, "bar-time"));
+  bar.title = `${item.id}: ${timeLabel(item.start)}–${timeLabel(item.end)}`;
+  bar.append(makeEl("span", `${timeLabel(item.start)}–${timeLabel(item.end)}`, "bar-time"));
   // Select this activity: re-highlight + open the Inspector from the schedule on hand.
   // Nothing in the scenario changed, so we redraw + refresh — never re-solve.
   bar.onclick = () => {
@@ -1206,6 +1276,15 @@ function hhmm(min) {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+// Like hhmm but prefixes the day for a multi-day plan, e.g. 1500 -> "D2 01:00".
+function hhmmDay(min) {
+  return "D" + (Math.floor(min / DAY) + 1) + " " + hhmm(((min % DAY) + DAY) % DAY);
+}
+// The time label to show the user. Single-day plans read plain "HH:MM" (unchanged); once the
+// solved horizon spans more than a day, times read "D2 01:00" so day-2+ values aren't shown as 25:00.
+function timeLabel(min) {
+  return solvedHorizon > DAY ? hhmmDay(min) : hhmm(min);
 }
 // "HH:MM" -> minutes since midnight (inverse of hhmm); null/blank -> null.
 function toMin(hm) {

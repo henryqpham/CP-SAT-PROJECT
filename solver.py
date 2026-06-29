@@ -17,6 +17,11 @@ def _to_minutes(hhmm: str) -> int:
 def solve(scenario: Scenario) -> dict:
     model = cp_model.CpModel()
 
+    # The planning window in minutes. With no horizon set it's one 24h day, so a
+    # plain scenario solves exactly as before (single-day). A bigger horizon lets
+    # the solver spread activities across multiple days (e.g. 2880 = 2 days).
+    horizon = scenario.horizon or DAY
+
     base_duration = {a.id: a.duration for a in scenario.activities}
 
     # Look through the conditionals once to find two things:
@@ -63,10 +68,10 @@ def solve(scenario: Scenario) -> dict:
 
     for a in scenario.activities:
         aid = a.id
-        # Each activity lives somewhere in the 24h day. A per-activity
+        # Each activity lives somewhere in the planning window. A per-activity
         # time_window (below) can only tighten this further.
-        starts[aid] = model.new_int_var(0, DAY, f"start_{aid}")
-        ends[aid] = model.new_int_var(0, DAY, f"end_{aid}")
+        starts[aid] = model.new_int_var(0, horizon, f"start_{aid}")
+        ends[aid] = model.new_int_var(0, horizon, f"end_{aid}")
 
         is_optional = aid in optional_ids
         rule = duration_rules.get(aid)
@@ -136,18 +141,18 @@ def solve(scenario: Scenario) -> dict:
             effective_starts.append(starts[aid])
             effective_ends.append(ends[aid])
         else:
-            effective_start = model.new_int_var(0, DAY, f"effstart_{aid}")
-            effective_end = model.new_int_var(0, DAY, f"effend_{aid}")
+            effective_start = model.new_int_var(0, horizon, f"effstart_{aid}")
+            effective_end = model.new_int_var(0, horizon, f"effend_{aid}")
             model.add(effective_start == starts[aid]).only_enforce_if(p)
-            model.add(effective_start == DAY).only_enforce_if(p.Not())
+            model.add(effective_start == horizon).only_enforce_if(p.Not())
             model.add(effective_end == ends[aid]).only_enforce_if(p)
             model.add(effective_end == 0).only_enforce_if(p.Not())
             effective_starts.append(effective_start)
             effective_ends.append(effective_end)
 
     if effective_starts:
-        min_start = model.new_int_var(0, DAY, "min_start")
-        max_end = model.new_int_var(0, DAY, "max_end")
+        min_start = model.new_int_var(0, horizon, "min_start")
+        max_end = model.new_int_var(0, horizon, "max_end")
         model.add_min_equality(min_start, effective_starts)
         model.add_max_equality(max_end, effective_ends)
         # Make the activities sit close together (the block stays compact but can
@@ -158,8 +163,9 @@ def solve(scenario: Scenario) -> dict:
             # Keeping an activity should always be worth more than any layout
             # improvement, so the solver never drops an activity just to tidy
             # the schedule. We give each kept activity a big reward (bigger than
-            # the whole range tidy can span) so keeping always wins.
-            model.maximize((2 * DAY + 1) * sum(presence.values()) - tidy)
+            # the whole range tidy can span, which is at most the horizon) so
+            # keeping always wins.
+            model.maximize((2 * horizon + 1) * sum(presence.values()) - tidy)
         else:
             model.minimize(tidy)
 
@@ -218,7 +224,7 @@ def solve(scenario: Scenario) -> dict:
                     "end": solver.value(ends[aid]),
                 }
             )
-        return {"status": "OPTIMAL", "schedule": schedule}
+        return {"status": "OPTIMAL", "schedule": schedule, "horizon": horizon}
 
     if status == cp_model.INFEASIBLE:
         return {"status": "INFEASIBLE"}

@@ -79,15 +79,17 @@ The IR is two lists — `activities` and `constraints` — plus an optional `day
   - `conditional` — a `when`/`then` rule, e.g. *when* kiteboard is absent, *then* double sail.
 - Every constraint also carries `enabled` (a toggle to switch it off without deleting it), `label`
   (a title), and `source` (the phrase it came from).
-- The optional **`day`** window (`{"start": "08:00", "end": "22:00"}`) bounds *every* activity to
-  that span and anchors the schedule to the start. Omit it and activities are free across 0–24h.
+- The optional **`horizon`** (in minutes) sets the planning window for *every* activity. Omit it and
+  activities are free across one 24h day (0–1440); set it bigger (e.g. `2880` = 2 days) and the
+  solver spreads them across multiple days.
 
 ---
 
 ## 3. How the solver maps the IR
 
 `solver.py` turns each activity into two integer variables — a **start** and **end**, in minutes
-from midnight (0–1440) — tied together by an **interval variable** so `start + duration = end`.
+from the start of the planning window (0–`horizon`, where `horizon` defaults to 1440 = one 24h day)
+— tied together by an **interval variable** so `start + duration = end`.
 Each constraint type then maps to a CP-SAT call:
 
 | IR constraint | CP-SAT call |
