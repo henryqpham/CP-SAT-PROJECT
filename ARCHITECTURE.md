@@ -29,7 +29,8 @@ A **section** (Deli, FrontDesk, Crew-A) is one resource — one thing at a time 
 in the same section can't overlap. That's what gives a what-if edit teeth: pile work into one
 section and the timeline stretches, or goes red.
 
-Everything runs locally in one small Flask app. No database, no build step, no AI needed.
+Everything runs locally in one small Flask app — no database, no build step. The basic solve needs no
+AI; AI document-ingest (local Ollama) is the MVP target.
 
 > *Dormant AI path.* An earlier version drafted the JSON from a plain-English sentence using a local
 > Ollama model, then asked you to review it. That `/parse` route still exists but is **off** for the

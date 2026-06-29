@@ -1,4 +1,4 @@
-// Dashboard: load an example (or parse a sentence) -> edit the cards -> /solve -> draw the timeline.
+// Dashboard: add activities + rules by hand -> edit the cards -> /solve -> draw the timeline.
 let scenario = { activities: [], constraints: [] };
 // The last schedule that solved. If a later edit makes things INFEASIBLE we show this one
 // (dimmed) instead of an empty timeline.
@@ -20,23 +20,17 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
-const COLORS = [
-  "#4f46e5", "#0891b2", "#16a34a", "#ea580c", "#db2777",
-  "#7c3aed", "#ca8a04", "#0d9488", "#2563eb", "#dc2626",
-];
 // Activity types -> bar color + legend label, loaded from /static/library.json at startup.
-// An activity with no type falls back to a distinct per-activity color, so untyped examples
-// still read clearly.
+// An activity with no type (or a type the library doesn't define) falls back to the neutral
+// bar color from the stylesheet — there is no color data hardcoded here.
 let TYPES = {};
 const colorFor = (id) => {
   const a = scenario.activities.find((x) => x.id === id);
   if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
-  const i = scenario.activities.findIndex((x) => x.id === id);
-  return COLORS[(i < 0 ? 0 : i) % COLORS.length];
+  return "var(--bar)";
 };
 
 // ---- wiring -------------------------------------------------------------
-loadExamples();
 addConstraintType("sequence", "Sequence (ordered)");
 
 $("parse-btn").onclick = () =>
@@ -47,6 +41,11 @@ $("parse-btn").onclick = () =>
     render();
   });
 
+$("solve-btn").onclick = () => solveNow();
+$("view-toggle").onclick = () => setView(!overview);
+
+// Example dropdown: fill it from /examples, and load the chosen example into the active plan.
+loadExamples();
 $("example-select").onchange = async (e) => {
   const name = e.target.value;
   if (!name) return;
@@ -61,14 +60,43 @@ $("example-select").onchange = async (e) => {
   }
 };
 
-$("solve-btn").onclick = () => solveNow();
-$("view-toggle").onclick = () => setView(!overview);
-
-// "+ Activity": append a blank activity to the plan; CP-SAT places it, the Inspector edits it.
+// "+ Activity": append a new activity (default 30 min) to the plan; CP-SAT places it, the Inspector edits it.
 $("add-activity").onclick = () => {
   scenario.activities.push({ id: uniqueActivityId("activity"), duration: 30, section: null });
   render();
 };
+
+// Browse Library modal: open/close + live search/filter/sort (none of these re-solve).
+$("browse-library").onclick = openLibrary;
+$("library-close").onclick = closeLibrary;
+$("library-modal").onclick = (e) => { if (e.target === $("library-modal")) closeLibrary(); }; // backdrop click
+$("library-search").oninput = (e) => { librarySearch = e.target.value; renderLibraryList(); };
+$("library-filter").onchange = (e) => { libraryCategory = e.target.value; renderLibraryList(); };
+$("library-sort").onchange = (e) => { librarySort = e.target.value; renderLibraryList(); };
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("library-modal").hidden) closeLibrary();
+});
+
+// "+ New": author a template straight into the Library (persisted in localStorage).
+function addCustomTemplate() {
+  const name = $("lib-new-name").value.trim();
+  const minutes = parseInt($("lib-new-min").value, 10);
+  const cat = $("lib-new-cat").value.trim();
+  if (!name) { $("lib-new-name").focus(); return; }
+  if (!Number.isInteger(minutes) || minutes < 1) { $("lib-new-min").focus(); return; }
+  const tpl = { label: name, category: cat || null, minutes };
+  const i = customTemplates.findIndex((t) => String(t.label).toLowerCase() === name.toLowerCase());
+  if (i > -1) customTemplates[i] = tpl;
+  else customTemplates.push(tpl);
+  saveTemplates();
+  $("lib-new-name").value = "";
+  $("lib-new-cat").value = "";
+  $("lib-new-min").value = "30";
+  renderLibraryList();
+  $("lib-new-name").focus();
+}
+$("lib-new-add").onclick = addCustomTemplate;
+$("lib-new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addCustomTemplate(); });
 
 // Solve the current in-memory scenario and draw the timeline. Reused by the
 // manual "Solve now" button and by the debounced live auto-solve below.
@@ -101,6 +129,7 @@ $("sentence").addEventListener("keydown", (e) => {
 // activity library before the first render so renderLibrary + colorFor have their data.
 (async () => {
   await loadLibrary();
+  loadTemplates();
   if (loadTabs()) {
     scenario = clone(tabs[activeTab].scenario);
   } else {
@@ -255,22 +284,6 @@ async function withBusy(btn, label, fn) {
   }
 }
 
-async function loadExamples() {
-  try {
-    const list = await getJSON("/examples");
-    const sel = $("example-select");
-    for (const ex of list) {
-      const opt = document.createElement("option");
-      opt.value = ex.name;
-      opt.textContent = ex.title;
-      opt.title = ex.description || "";
-      sel.append(opt);
-    }
-  } catch {
-    /* leave the dropdown with just its placeholder */
-  }
-}
-
 // ---- alerts -------------------------------------------------------------
 function showAlert(msg) {
   const a = $("alert");
@@ -315,26 +328,27 @@ function addConstraintType(type, label) {
 function newConstraint(type) {
   const a0 = scenario.activities[0]?.id || "";
   const a1 = scenario.activities[1]?.id || a0;
-  const base = { id: uniqueConstraintId(), type, enabled: true, source: "" };
+  // No baked-in numbers or titles: times start empty, the scale factor is the no-op 1, and the
+  // label starts blank. The activity refs just point at whatever's already in the plan.
+  const base = { id: uniqueConstraintId(), type, enabled: true, source: "", label: "" };
   if (type === "time_window")
-    return { ...base, activity: a0, earliest: "08:00", latest_end: null, label: "New time window" };
+    return { ...base, activity: a0, earliest: null, latest_end: null };
   if (type === "precedence")
-    return { ...base, before: a0, after: a1, label: "New precedence" };
+    return { ...base, before: a0, after: a1 };
   if (type === "no_overlap")
-    return { ...base, activities: "all", label: "One thing at a time" };
+    return { ...base, activities: "all" };
   if (type === "sequence") {
     // Seed the steps with the first two activities (or one, or none, depending on what exists).
     let steps = [];
     if (a0 && a1 !== a0) steps = [a0, a1];
     else if (a0) steps = [a0];
-    return { ...base, activities: steps, label: "New sequence" };
+    return { ...base, activities: steps };
   }
   if (type === "conditional")
     return {
       ...base,
       when: { activity: a0, present: false },
-      then: { set_duration: { activity: a1, factor: 2 } },
-      label: "New conditional",
+      then: { set_duration: { activity: a1, factor: 1 } },
     };
   return base;
 }
@@ -342,8 +356,6 @@ function newConstraint(type) {
 // ---- rendering ----------------------------------------------------------
 function render() {
   renderRoster();
-  renderLibrary();
-  renderDay();
   renderConstraints();
   renderInspector();
   scheduleSolve();
@@ -390,12 +402,19 @@ function renderRoster() {
   }
 }
 
-// ---- library (activity palette) ----------------------------------------
-// A palette of clickable templates loaded from /static/library.json: clicking one appends a
-// new activity with that duration. CP-SAT then places it; the Inspector edits the selected one.
+// ---- library (Browse modal) --------------------------------------------
+// A wide, searchable catalog of activity templates loaded from /static/library.json. "+ Add"
+// appends a new activity; CP-SAT then places it and the Inspector edits the selected one.
 let LIBRARY = [];
+// Browse-modal controls (don't re-solve; only "+ Add" changes the plan).
+let librarySearch = "";
+let libraryCategory = ""; // "" = all categories
+let librarySort = "name";
+// User-authored templates ("+ New" in the modal), persisted in localStorage like saved plans.
+let customTemplates = [];
+const TEMPLATES_KEY = "planner.templates.v1";
 // Load the activity templates + type→color map from the data file. On failure both stay empty
-// (no hardcoded fallback). colorFor + renderLibrary read LIBRARY/TYPES at render time, so
+// (no hardcoded fallback). colorFor + renderLibraryList read LIBRARY/TYPES at render time, so
 // populating them asynchronously is fine.
 async function loadLibrary() {
   try {
@@ -406,29 +425,150 @@ async function loadLibrary() {
     /* leave LIBRARY/TYPES empty — no hardcoded fallback data */
   }
 }
-function renderLibrary() {
-  const box = $("lib-templates");
-  if (!box) return;
+
+// Fill the example dropdown from /examples (names + titles). Silent if it fails.
+async function loadExamples() {
+  try {
+    const list = await getJSON("/examples");
+    const sel = $("example-select");
+    for (const ex of list) {
+      const opt = document.createElement("option");
+      opt.value = ex.name;
+      opt.textContent = ex.title;
+      opt.title = ex.description || "";
+      sel.append(opt);
+    }
+  } catch {
+    /* leave the dropdown with just its placeholder */
+  }
+}
+
+// User templates persist like saved plans (loadTabs/saveTabs). On any failure, fall back to [].
+function loadTemplates() {
+  try {
+    const data = JSON.parse(localStorage.getItem(TEMPLATES_KEY));
+    customTemplates = Array.isArray(data) ? data : [];
+  } catch {
+    customTemplates = [];
+  }
+}
+function saveTemplates() {
+  try {
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(customTemplates));
+  } catch {
+    /* storage unavailable — skip persistence */
+  }
+}
+// The catalog = file (library.json) templates + the user's saved ones. Keep the SAME element
+// references (no per-item copy) so customTemplates.includes(tpl) works for the remove button.
+function allTemplates() {
+  return [...LIBRARY, ...customTemplates];
+}
+
+function openLibrary() {
+  $("library-modal").hidden = false;
+  renderLibraryList();
+  $("library-search").focus();
+}
+function closeLibrary() {
+  $("library-modal").hidden = true;
+}
+
+// Rebuild the category <select> from the DATA (distinct template categories + TYPES keys),
+// preserving the current selection; drop the selection if its category no longer exists.
+function rebuildLibraryFilter() {
+  const sel = $("library-filter");
+  const cats = new Set();
+  for (const tpl of allTemplates()) if (tpl.category) cats.add(tpl.category);
+  for (const k of Object.keys(TYPES)) cats.add(k);
+  const sorted = [...cats].sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "All categories";
+  sel.append(all);
+  for (const c of sorted) {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = (TYPES[c] && TYPES[c].label) || c;
+    sel.append(opt);
+  }
+  if (libraryCategory && sorted.includes(libraryCategory)) sel.value = libraryCategory;
+  else { libraryCategory = ""; sel.value = ""; }
+  // mirror the categories into the "+ New" datalist for autocomplete
+  const dl = $("lib-cat-options");
+  if (dl) {
+    dl.innerHTML = "";
+    for (const c of sorted) {
+      const o = document.createElement("option");
+      o.value = c;
+      dl.append(o);
+    }
+  }
+}
+
+// Filter + sort LIBRARY by the current search/category/sort state and draw the rows.
+function renderLibraryList() {
+  rebuildLibraryFilter();
+  const box = $("library-list");
   box.innerHTML = "";
-  // Any templates you've saved in static/library.json (none by default):
-  for (const tpl of LIBRARY) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "lib-item";
-    row.append(makeEl("span", "+", "lib-add"));
-    row.append(makeEl("span", tpl.label, "lib-label"));
-    row.append(makeEl("span", tpl.category, "lib-cat"));
-    row.append(makeEl("span", dur(tpl.minutes), "lib-dur"));
-    row.title = `Add ${tpl.label} (${tpl.category}, ${dur(tpl.minutes)})`;
-    row.onclick = () => {
+  if (!allTemplates().length) {
+    box.append(makeEl("p", "No templates yet — use “+ New” above to create one.", "hint"));
+    return;
+  }
+  const q = librarySearch.trim().toLowerCase();
+  let rows = allTemplates().filter((tpl) => {
+    if (libraryCategory && (tpl.category || "") !== libraryCategory) return false;
+    if (!q) return true;
+    return String(tpl.label || "").toLowerCase().includes(q)
+        || String(tpl.category || "").toLowerCase().includes(q);
+  });
+  rows = rows.slice().sort((a, b) => {
+    if (librarySort === "duration") return (a.minutes || 0) - (b.minutes || 0);
+    if (librarySort === "category")
+      return String(a.category || "").localeCompare(String(b.category || ""))
+          || String(a.label || "").localeCompare(String(b.label || ""));
+    return String(a.label || "").localeCompare(String(b.label || ""));
+  });
+  if (!rows.length) {
+    box.append(makeEl("p", "No matches.", "hint"));
+    return;
+  }
+  for (const tpl of rows) {
+    const row = document.createElement("div");
+    row.className = "lib-row";
+    const sw = makeEl("span", "", "lib-row-swatch");
+    sw.style.background = (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)";
+    row.append(sw);
+    row.append(makeEl("span", tpl.label, "lib-row-name"));
+    row.append(makeEl("span", (TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category || "—", "lib-row-cat"));
+    row.append(makeEl("span", dur(tpl.minutes), "lib-row-dur"));
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "btn btn-sm lib-row-add";
+    add.textContent = "+ Add";
+    add.onclick = () => {
       scenario.activities.push({
         id: uniqueActivityId(slug(tpl.label)),
         duration: tpl.minutes,
         section: null,
         type: tpl.category,
       });
-      render();
+      render(); // roster + (debounced) timeline update; modal stays open
     };
+    row.append(add);
+    // User-saved templates get a "saved" tag + a × to remove; seed (library.json) rows don't.
+    if (customTemplates.includes(tpl)) {
+      row.append(makeEl("span", "saved", "lib-row-saved"));
+      const rm = deleteBtn(() => {
+        const i = customTemplates.indexOf(tpl);
+        if (i > -1) customTemplates.splice(i, 1);
+        saveTemplates();
+        renderLibraryList();
+      });
+      rm.title = "Remove saved template";
+      row.append(rm);
+    }
     box.append(row);
   }
 }
@@ -436,31 +576,6 @@ function renderLibrary() {
 function slug(label) {
   const s = String(label).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return s || "activity";
-}
-
-function renderDay() {
-  const box = $("day");
-  box.innerHTML = "";
-  const el = cardShell("constraint");
-  const head = document.createElement("div");
-  head.className = "card-head";
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.checked = !!scenario.day;
-  cb.setAttribute("aria-label", "limit the whole day to a window");
-  cb.onchange = () => {
-    scenario.day = cb.checked ? { start: "08:00", end: "22:00" } : null;
-    render();
-  };
-  head.append(cb);
-  head.append(makeEl("strong", "Bound the whole day to a window", "card-title"));
-  el.append(head);
-  if (scenario.day) {
-    el.append(textField("start (HH:MM)", scenario.day.start, (v) => (scenario.day.start = v)));
-    el.append(textField("end (HH:MM)", scenario.day.end, (v) => (scenario.day.end = v)));
-    el.append(makeEl("div", "Every activity must fit inside this window, and the day starts here.", "hint"));
-  }
-  box.append(el);
 }
 
 // Inspector (right panel): edits the activity you clicked on the timeline.
@@ -696,7 +811,7 @@ function setView(isOverview) {
   drawTimeline(shownSchedule, shownStale);
 }
 
-// The health strip: status + finish time + day slack + how many activities are tight.
+// The health strip: status + finish time + how many activities are tight.
 function renderHealth(status, schedule, stale) {
   const strip = $("health");
   strip.hidden = false;
@@ -709,9 +824,6 @@ function renderHealth(status, schedule, stale) {
     const caps = activityCaps();
     const finish = Math.max(...schedule.map((s) => s.end));
     strip.append(makeEl("span", "finishes " + hhmm(finish), "health-stat"));
-    if (scenario.day) {
-      strip.append(makeEl("span", dur(toMin(scenario.day.end) - finish) + " slack", "health-stat"));
-    }
     const tight = schedule.filter((s) => isTight(s, caps)).length;
     strip.append(makeEl("span", tight + " tight", "health-stat"));
     if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
@@ -722,19 +834,13 @@ function buildGantt(schedule) {
   const g = document.createElement("div");
   g.className = "gantt";
 
-  // Fit the axis to the day window if set, else to the schedule's own span (padded),
-  // so the bars fill the width instead of a thin slice of a fixed 0–24h axis.
-  let t0, t1;
-  if (scenario.day) {
-    t0 = toMin(scenario.day.start);
-    t1 = toMin(scenario.day.end);
-  } else {
-    t0 = Math.min(...schedule.map((s) => s.start));
-    t1 = Math.max(...schedule.map((s) => s.end));
-    const pad = Math.max(15, Math.round((t1 - t0) * 0.05));
-    t0 = Math.max(0, t0 - pad);
-    t1 = Math.min(DAY, t1 + pad);
-  }
+  // Fit the axis to the schedule's own span (padded), so the bars fill the
+  // width instead of sitting in a thin slice of a fixed 0–24h axis.
+  let t0 = Math.min(...schedule.map((s) => s.start));
+  let t1 = Math.max(...schedule.map((s) => s.end));
+  const pad = Math.max(15, Math.round((t1 - t0) * 0.05));
+  t0 = Math.max(0, t0 - pad);
+  t1 = Math.min(DAY, t1 + pad);
   if (!(t1 > t0)) { t0 = 0; t1 = DAY; } // degenerate fallback
   const span = t1 - t0;
   const pct = (min) => (100 * (min - t0)) / span;
@@ -872,7 +978,7 @@ function dur(min) {
 }
 
 // How close each activity runs to its cap — shared by the health strip, the section ⚠ flag,
-// and the bar tinting. A cap is the tightest enabled time_window latest_end, plus the day end.
+// and the bar tinting. A cap is the tightest enabled time_window latest_end.
 const TIGHT_MIN = 15;
 function activityCaps() {
   const dl = new Map();
@@ -882,11 +988,11 @@ function activityCaps() {
     if (d == null) continue;
     if (!dl.has(c.activity) || d < dl.get(c.activity)) dl.set(c.activity, d);
   }
-  return { dl, dayEnd: scenario.day ? toMin(scenario.day.end) : null };
+  return { dl };
 }
 function slackOf(item, caps) {
-  const c = [caps.dl.get(item.id), caps.dayEnd].filter((x) => x != null);
-  return c.length ? Math.min(...c) - item.end : null;
+  const cap = caps.dl.get(item.id);
+  return cap != null ? cap - item.end : null;
 }
 function isTight(item, caps) {
   const s = slackOf(item, caps);

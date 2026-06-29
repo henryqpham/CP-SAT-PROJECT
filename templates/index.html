@@ -34,7 +34,7 @@
       </div>
 
       <div class="dash">
-        <!-- LEFT: the activity library (click to add), the day window, and the constraints -->
+        <!-- LEFT: the activity library (click to add) and the constraints -->
         <section class="panel col-lib" id="library">
           <div class="board-head">
             <h2>On this plan</h2>
@@ -42,15 +42,7 @@
           </div>
           <div id="roster"></div>
 
-          <div class="board-head">
-            <h2>Library</h2>
-          </div>
-          <div id="lib-templates"></div>
-
-          <div class="board-head">
-            <h2>Day window</h2>
-          </div>
-          <div id="day"></div>
+          <button type="button" id="browse-library" class="btn btn-ghost btn-sm lib-browse-btn">📚 Browse Library</button>
 
           <div class="board-head">
             <h2>Constraints</h2>
@@ -82,6 +74,33 @@
 
         <!-- RIGHT: the inspector — edit panel for the activity you clicked (filled in by app.js) -->
         <section class="panel col-insp" id="inspector"></section>
+      </div>
+    </div>
+
+    <!-- Browse Library: a wide, searchable catalog of activity templates (filled in by app.js) -->
+    <div id="library-modal" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Library">
+        <div class="modal-head">
+          <h2 class="modal-title">Library</h2>
+          <input id="library-search" class="select modal-search" type="search"
+                 placeholder="Search templates…" aria-label="Search templates" />
+          <select id="library-filter" class="select select-sm" aria-label="Filter by category"></select>
+          <select id="library-sort" class="select select-sm" aria-label="Sort">
+            <option value="name">Name</option>
+            <option value="duration">Duration</option>
+            <option value="category">Category</option>
+          </select>
+          <button type="button" id="library-close" class="modal-close" aria-label="Close library">×</button>
+        </div>
+        <!-- "+ New": author a template straight into the Library (persisted in localStorage) -->
+        <div class="lib-new-row">
+          <input id="lib-new-name" class="select" type="text" placeholder="New activity name…" aria-label="New template name" />
+          <input id="lib-new-min" class="select select-sm" type="number" min="1" step="1" value="30" aria-label="Duration (minutes)" />
+          <input id="lib-new-cat" class="select select-sm" type="text" list="lib-cat-options" placeholder="Category (optional)" aria-label="Category" />
+          <datalist id="lib-cat-options"></datalist>
+          <button type="button" id="lib-new-add" class="btn btn-sm btn-primary">Add to Library</button>
+        </div>
+        <div id="library-list" class="modal-list"></div>
       </div>
     </div>
 

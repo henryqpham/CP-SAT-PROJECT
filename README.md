@@ -6,7 +6,7 @@ cleaning — and the timeline redraws by itself, so you can see right away if th
 
 Activities are grouped into **sections** (like Deli, Cheese, FrontDesk — your departments or
 stations). The schedule is solved by **CP-SAT** (Google OR-Tools). It's one local Flask app,
-Python only — a portfolio project.
+Python only — a real, working ops planner.
 
 New to constraint solving? See [ARCHITECTURE.md](ARCHITECTURE.md) for a plain-language tour of the
 app and how CP-SAT works.
@@ -16,33 +16,30 @@ app and how CP-SAT works.
 
 ## Status
 
-The engine is already built. The manual what-if UI is being built on top of it.
+A single-day manual base is working; the full MVP is being built on top of it.
 
-**Done:**
+**The MVP (the goal):** drop in a large document → a local Ollama model parses it into many
+activities, each with its own constraints → pick which to add → schedule them across a **multi-day,
+custom horizon** (a 6-day trip, 480 hours, a mission length) → a capacity health bar shows whether
+you're **over / under / how much time is left**, with the goal of **filling** the window across all
+your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadmap.
 
-- The single-day CP-SAT solver.
-- The editable JSON IR and its 5 constraint types.
-- The timeline (Gantt chart).
-- The example scenarios.
-- Live editing of the rules.
+**Working today (the base):**
 
-**Building now (the MVP):**
+- The CP-SAT solver (single-day for now) + the editable JSON IR and its 5 constraint types.
+- The timeline (Gantt), the "On this plan" roster, and the searchable Library (with "+ New").
+- Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
 
-- Activities grouped into sections, where each section can do one thing at a time.
-- An Excel-style grid to enter them.
-- Live auto-solve as you edit.
-- Keep the last good timeline (dimmed) when a change breaks it.
-- A small slack readout — how much room is left in the day.
+**Next, toward the MVP (not paused — the actual target):**
 
-**Paused (kept, not deleted):**
-
-- AI sentence parsing (Ollama).
-- Multi-day scheduling.
-- `.docx` import.
+- Multi-day / custom-horizon scheduling + a capacity ("over / under / time left") health bar.
+- Document ingest + local-Ollama parsing into activities & constraints (re-activates `/parse`).
+- The crew / section model so many sections pack in parallel.
+- Prior art for multi-day + `.docx` ingest lives on `archive/advanced-multiday-classifier` — revive it.
 
 ## How it works
 
-You build the plan by hand — no AI, no typing sentences:
+Today you build the plan by hand (AI document-ingest is the MVP target — see Status):
 
 1. Add activities in a grid, each with a **duration** and a **section** (Deli, FrontDesk, …).
 2. Each section is treated as **one resource** — it can only do one thing at a time, so two
@@ -119,13 +116,11 @@ An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP)
 (they can't overlap), which is what makes the what-if real: drop a second task into a busy section
 and watch the timeline stretch or go red.
 
-An optional `day` (a `DayWindow` with `start`/`end` as `"HH:MM"`) bounds *every* activity to the
-day's span and anchors the schedule to its start; omit it and activities run free across the full
-24h day. Full example in `examples/lake.json`:
+Activities run free across the full 24h day; per-activity `time_window` constraints are what pin
+them down. Full example in `examples/lake.json`:
 
 ```jsonc
 {
-  "day": { "start": "08:00", "end": "22:00" },   // optional; bounds all activities
   "activities": [{ "id": "sail", "duration": 120, "section": "Lake" }],
   "constraints": [
     { "id": "c2", "type": "time_window", "activity": "drive_home",
@@ -157,7 +152,8 @@ model with `OLLAMA_MODEL` — only if you re-enable `/parse`.)
 
 ## Notes
 
-- Local-only portfolio/demo — no database, no auth, no hosting.
-- Manual entry only for the MVP; the AI sentence-parsing path is kept dormant, not removed.
+- Local-only — no database, no auth, no hosting (privacy: data stays on the machine).
+- Manual entry today; AI document-ingest (local Ollama) is the MVP target — the `/parse` path is
+  kept dormant for now, not removed.
 - The advanced version (multi-day, `.docx` import, document extraction) lives on the branch
   `archive/advanced-multiday-classifier` if it's ever needed again.

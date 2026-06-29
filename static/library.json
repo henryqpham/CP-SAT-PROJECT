@@ -1,8 +1,4 @@
 {
-  "types": {
-    "REST": { "label": "Rest", "color": "#2563eb" },
-    "CREW": { "label": "Crew", "color": "#16a34a" },
-    "OPS":  { "label": "Ops",  "color": "#ea580c" }
-  },
+  "types": {},
   "templates": []
 }

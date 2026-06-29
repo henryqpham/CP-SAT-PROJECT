@@ -19,14 +19,6 @@ def solve(scenario: Scenario) -> dict:
 
     base_duration = {a.id: a.duration for a in scenario.activities}
 
-    # Optional whole-day window: bounds EVERY activity and anchors the schedule
-    # to the start of the day (so "my day runs 8 AM to 10 PM" actually holds).
-    day_start, day_end, day_set = 0, DAY, False
-    if scenario.day is not None:
-        ds, de = _to_minutes(scenario.day.start), _to_minutes(scenario.day.end)
-        if 0 <= ds < de <= DAY:
-            day_start, day_end, day_set = ds, de, True
-
     # Look through the conditionals once to find two things:
     #   - which activities are OPTIONAL (named in a conditional's "when"), and
     #   - which activities change DURATION based on whether another activity
@@ -71,10 +63,10 @@ def solve(scenario: Scenario) -> dict:
 
     for a in scenario.activities:
         aid = a.id
-        # Each activity lives within the day window (full 0..DAY if none set).
-        # A per-activity time_window (below) can only tighten this further.
-        starts[aid] = model.new_int_var(day_start, day_end, f"start_{aid}")
-        ends[aid] = model.new_int_var(day_start, day_end, f"end_{aid}")
+        # Each activity lives somewhere in the 24h day. A per-activity
+        # time_window (below) can only tighten this further.
+        starts[aid] = model.new_int_var(0, DAY, f"start_{aid}")
+        ends[aid] = model.new_int_var(0, DAY, f"end_{aid}")
 
         is_optional = aid in optional_ids
         rule = duration_rules.get(aid)
@@ -158,15 +150,10 @@ def solve(scenario: Scenario) -> dict:
         max_end = model.new_int_var(0, DAY, "max_end")
         model.add_min_equality(min_start, effective_starts)
         model.add_max_equality(max_end, effective_ends)
-        # If we know when the day starts, finish as early as possible so the
-        # schedule packs toward the start of the day. If we don't, just make the
-        # activities sit close together (the block stays compact but can float),
-        # because with no fixed start, minimizing the finish would drift the
-        # activities into the empty early-morning hours.
-        if day_set:
-            tidy = max_end
-        else:
-            tidy = max_end - min_start
+        # Make the activities sit close together (the block stays compact but can
+        # float). With no fixed day start, minimizing the finish instead would
+        # drift the activities into the empty early-morning hours.
+        tidy = max_end - min_start
         if presence:
             # Keeping an activity should always be worth more than any layout
             # improvement, so the solver never drops an activity just to tidy
