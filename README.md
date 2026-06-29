@@ -93,7 +93,9 @@ CP-SAT-PROJECT/
 ├── examples/lake.json   # hand-written IR to test /solve without any AI
 ├── templates/index.html
 ├── static/app.js        # the grid + live timeline; edits auto-solve via /solve
-├── static/style.css
+├── static/style.css     # dark "mission control" theme (tokens at :root drive the whole look)
+├── static/artemis-logo.png  # topbar logo
+├── static/earthrise.jpg     # darkened background photo behind the app
 ├── requirements.txt
 └── .env.example         # OLLAMA_MODEL= (only for the dormant AI path)
 ```

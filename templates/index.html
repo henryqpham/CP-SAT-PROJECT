@@ -3,15 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Schedule Optimizer</title>
+    <title>NASA Mission Planner Demo</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   </head>
   <body>
     <div class="app">
       <header class="topbar">
         <div class="brand">
-          <h1>Schedule Optimizer</h1>
-          <span class="brand-sub">manual what-if planner</span>
+          <img class="brand-logo" src="{{ url_for('static', filename='artemis-logo.png') }}" alt="Artemis" />
+          <h1>NASA Mission Planner</h1>
+          <span class="brand-sub">Demo</span>
         </div>
         <div class="topbar-actions">
           <select id="example-select" class="select" aria-label="Load an example">
@@ -39,6 +40,11 @@
           <div class="board-head">
             <h2>On this plan</h2>
           </div>
+          <div class="roster-tools">
+            <input id="roster-search" class="select select-sm roster-search" type="search"
+                   placeholder="Filter activities…" aria-label="Filter activities" />
+          </div>
+          <div id="roster-chips" class="lib-chips" role="group" aria-label="Filter by section"></div>
           <div id="roster"></div>
 
           <button type="button" id="browse-library" class="btn btn-ghost btn-sm lib-browse-btn">📚 Browse Library</button>
@@ -70,9 +76,6 @@
           <div id="banner" class="banner" hidden></div>
           <div id="timeline"></div>
         </section>
-
-        <!-- RIGHT: the inspector — edit panel for the activity you clicked (filled in by app.js) -->
-        <section class="panel col-insp" id="inspector"></section>
       </div>
     </div>
 
@@ -106,6 +109,17 @@
           <button type="button" id="lib-new-add" class="btn btn-sm btn-primary">Add to Library</button>
         </div>
         <div id="library-list" class="modal-list"></div>
+      </div>
+    </div>
+
+    <!-- Inspector: edits the activity you clicked. A popup so the timeline keeps the full width. -->
+    <div id="inspector-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-narrow" role="dialog" aria-modal="true" aria-label="Inspector">
+        <div class="modal-head">
+          <h2 class="modal-title">Inspector</h2>
+          <button type="button" id="inspector-close" class="modal-close" aria-label="Close inspector">×</button>
+        </div>
+        <div id="inspector" class="modal-body"></div>
       </div>
     </div>
 

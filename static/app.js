@@ -62,6 +62,7 @@ $("example-select").onchange = async (e) => {
   try {
     scenario = await getJSON(`/example/${name}`);
     selectedId = null;
+    resetRosterFilter();
     saveTabs(); // load the example into the active plan
     render();
   } catch (err) {
@@ -83,8 +84,23 @@ $("library-search").oninput = (e) => {
   libSearchTimer = setTimeout(renderLibraryList, 120); // debounce so 600 rows don't rebuild per keystroke
 };
 $("library-sort").onchange = (e) => { librarySort = e.target.value; renderLibraryList(); };
+
+// Inspector popup: close via × or a backdrop click (it opens on activity selection, below).
+$("inspector-close").onclick = closeInspector;
+$("inspector-modal").onclick = (e) => { if (e.target === $("inspector-modal")) closeInspector(); };
+
+// Roster filter: debounced search over "On this plan". View-only — it never re-solves.
+let rosterSearchTimer = null;
+$("roster-search").oninput = (e) => {
+  rosterSearch = e.target.value;
+  clearTimeout(rosterSearchTimer);
+  rosterSearchTimer = setTimeout(renderRoster, 120);
+};
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("library-modal").hidden) closeLibrary();
+  if (e.key !== "Escape") return;
+  if (!$("library-modal").hidden) closeLibrary();
+  else if (!$("inspector-modal").hidden) closeInspector();
 });
 
 // "+ New": author a template straight into the Library (persisted in localStorage). A template is
@@ -257,6 +273,7 @@ function switchTab(i) {
   activeTab = i;
   scenario = clone(tabs[i].scenario);
   selectedId = null;
+  resetRosterFilter();
   renderTabs();
   render();
 }
@@ -266,6 +283,7 @@ function newTab() {
   activeTab = tabs.length - 1;
   scenario = clone(tabs[activeTab].scenario);
   selectedId = null;
+  resetRosterFilter();
   saveTabs();
   renderTabs();
   render();
@@ -276,6 +294,7 @@ function deleteTab(i) {
   if (i < activeTab || activeTab >= tabs.length) activeTab = Math.max(0, activeTab - 1);
   scenario = clone(tabs[activeTab].scenario);
   selectedId = null;
+  resetRosterFilter();
   saveTabs();
   renderTabs();
   render();
@@ -424,15 +443,53 @@ function render() {
 // × to remove it. Clicking a row selects that activity (highlights its bar + opens the Inspector)
 // without re-solving — same as clicking the bar on the timeline. Refreshed from render() and at
 // the end of drawTimeline() so solved times + the selected highlight stay current.
+// Roster view filters — narrow the displayed list only; they never touch the scenario or solver.
+let rosterSearch = "";
+let rosterSection = ""; // "" = all sections
 function renderRoster() {
   const box = $("roster");
   if (!box) return;
   box.innerHTML = "";
+  const chipBox = $("roster-chips");
+  if (chipBox) chipBox.innerHTML = "";
+
   if (!scenario.activities.length) {
     box.append(makeEl("p", "No activities yet — add some from Browse Library.", "hint"));
     return;
   }
-  for (const a of scenario.activities) {
+
+  // Section filter chips (All + one per section, with counts). Reuses the .lib-chip styling.
+  const sections = sectionNames();
+  if (rosterSection && !sections.includes(rosterSection)) rosterSection = ""; // its section vanished
+  if (chipBox && sections.length > 1) {
+    chipBox.append(rosterChip("", "All", scenario.activities.length, !rosterSection));
+    for (const sec of sections) {
+      const count = scenario.activities.filter(
+        (a) => ((a.section && a.section.trim()) || "Ungrouped") === sec
+      ).length;
+      chipBox.append(rosterChip(sec, sec, count, rosterSection === sec));
+    }
+  }
+
+  // Apply the section chip + the search text. This filters the DISPLAYED rows only.
+  const q = rosterSearch.trim().toLowerCase();
+  const rows = scenario.activities.filter((a) => {
+    const sec = (a.section && a.section.trim()) || "Ungrouped";
+    if (rosterSection && sec !== rosterSection) return false;
+    if (!q) return true;
+    return (
+      String(a.id).toLowerCase().includes(q) ||
+      String(a.type || "").toLowerCase().includes(q) ||
+      sec.toLowerCase().includes(q)
+    );
+  });
+
+  if (!rows.length) {
+    box.append(makeEl("p", "No activities match this filter.", "hint"));
+    return;
+  }
+
+  for (const a of rows) {
     const row = document.createElement("div");
     row.className = "roster-row" + (a.id === selectedId ? " selected" : "");
     const sw = makeEl("span", "", "roster-swatch");
@@ -447,6 +504,7 @@ function renderRoster() {
       selectedId = a.id;
       drawTimeline(shownSchedule, shownStale);
       renderInspector();
+      openInspector();
     };
     const x = deleteBtn((e) => {
       e.stopPropagation(); // don't also select the row
@@ -459,6 +517,28 @@ function renderRoster() {
     row.append(x);
     box.append(row);
   }
+}
+
+// One section filter chip for the roster (label + count; click to set or clear the filter).
+function rosterChip(value, label, count, active) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "lib-chip" + (active ? " active" : "");
+  chip.append(makeEl("span", label, "lib-chip-label"));
+  chip.append(makeEl("span", String(count), "lib-chip-count"));
+  chip.onclick = () => {
+    rosterSection = rosterSection === value ? "" : value;
+    renderRoster();
+  };
+  return chip;
+}
+
+// Clear the roster view filters (used when a different plan is loaded).
+function resetRosterFilter() {
+  rosterSearch = "";
+  rosterSection = "";
+  const inp = $("roster-search");
+  if (inp) inp.value = "";
 }
 
 // ---- library (Browse modal) --------------------------------------------
@@ -565,6 +645,15 @@ function openLibrary() {
 }
 function closeLibrary() {
   $("library-modal").hidden = true;
+}
+
+// The Inspector is a popup so the timeline keeps the full width. It opens ONLY on an explicit
+// activity selection (a bar or roster-row click), never on the debounced auto-solve redraw.
+function openInspector() {
+  $("inspector-modal").hidden = false;
+}
+function closeInspector() {
+  $("inspector-modal").hidden = true;
 }
 
 // Export the user's library (saved templates + category colors) as a downloadable JSON file — the
@@ -784,11 +873,11 @@ function renderInspector() {
   const box = $("inspector");
   if (!box) return;
   box.innerHTML = "";
-  box.append(makeEl("h2", "Inspector", "insp-title"));
 
   const act = selectedId && scenario.activities.find((a) => a.id === selectedId);
   if (!act) {
     if (selectedId) selectedId = null; // clear a dangling selection (e.g. deleted activity)
+    closeInspector(); // its activity is gone — don't leave an empty popup open
     box.append(makeEl("p", "Click an activity on the timeline to inspect it.", "insp-hint"));
     return;
   }
@@ -1265,6 +1354,7 @@ function activityRow(item, pct) {
     selectedId = item.id;
     drawTimeline(shownSchedule, shownStale);
     renderInspector();
+    openInspector();
   };
   track.append(bar);
   row.append(track);
