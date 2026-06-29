@@ -83,14 +83,17 @@
           <h2 class="modal-title">Library</h2>
           <input id="library-search" class="select modal-search" type="search"
                  placeholder="Search templates…" aria-label="Search templates" />
-          <select id="library-filter" class="select select-sm" aria-label="Filter by category"></select>
           <select id="library-sort" class="select select-sm" aria-label="Sort">
             <option value="name">Name</option>
             <option value="duration">Duration</option>
             <option value="category">Category</option>
           </select>
+          <button type="button" id="library-export" class="btn btn-ghost btn-sm">Export</button>
+          <button type="button" id="library-import" class="btn btn-ghost btn-sm">Import</button>
+          <input type="file" id="library-import-file" accept="application/json,.json" hidden />
           <button type="button" id="library-close" class="modal-close" aria-label="Close library">×</button>
         </div>
+        <div id="library-chips" class="lib-chips" role="group" aria-label="Filter by category"></div>
         <!-- "+ New": author a template straight into the Library (persisted in localStorage) -->
         <div class="lib-new-row">
           <input id="lib-new-name" class="select" type="text" placeholder="New activity name…" aria-label="New template name" />

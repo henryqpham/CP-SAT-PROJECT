@@ -27,6 +27,9 @@ let TYPES = {};
 // User-defined category styling (color + icon), persisted in localStorage and merged onto TYPES.
 let customTypes = {};
 const TYPES_KEY = "planner.types.v1";
+// Recently-added templates (labels, most-recent first) — a quick strip at the top of the Library.
+let recents = [];
+const RECENTS_KEY = "planner.recents.v1";
 const colorFor = (id) => {
   const a = scenario.activities.find((x) => x.id === id);
   if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
@@ -67,13 +70,15 @@ $("example-select").onchange = async (e) => {
 $("browse-library").onclick = openLibrary;
 $("library-close").onclick = closeLibrary;
 $("library-modal").onclick = (e) => { if (e.target === $("library-modal")) closeLibrary(); }; // backdrop click
+$("library-export").onclick = exportLibrary;
+$("library-import").onclick = () => $("library-import-file").click();
+$("library-import-file").onchange = (e) => { if (e.target.files[0]) importLibrary(e.target.files[0]); e.target.value = ""; };
 let libSearchTimer = null;
 $("library-search").oninput = (e) => {
   librarySearch = e.target.value;
   clearTimeout(libSearchTimer);
   libSearchTimer = setTimeout(renderLibraryList, 120); // debounce so 600 rows don't rebuild per keystroke
 };
-$("library-filter").onchange = (e) => { libraryCategory = e.target.value; renderLibraryList(); };
 $("library-sort").onchange = (e) => { librarySort = e.target.value; renderLibraryList(); };
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("library-modal").hidden) closeLibrary();
@@ -175,6 +180,7 @@ $("sentence").addEventListener("keydown", (e) => {
   await loadLibrary();
   loadTemplates();
   loadTypes();
+  loadRecents();
   if (loadTabs()) {
     scenario = clone(tabs[activeTab].scenario);
   } else {
@@ -522,6 +528,23 @@ function saveTypes() {
     /* storage unavailable — skip persistence */
   }
 }
+// Recently-added templates: a localStorage ring buffer of labels (most-recent first, max 8).
+function loadRecents() {
+  try {
+    const data = JSON.parse(localStorage.getItem(RECENTS_KEY));
+    recents = Array.isArray(data) ? data.slice(0, 8) : [];
+  } catch {
+    recents = [];
+  }
+}
+function pushRecent(label) {
+  recents = [label, ...recents.filter((l) => l !== label)].slice(0, 8);
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recents));
+  } catch {
+    /* storage unavailable — skip persistence */
+  }
+}
 // The catalog = file (library.json) templates + the user's saved ones. Keep the SAME element
 // references (no per-item copy) so customTemplates.includes(tpl) works for the remove button.
 function allTemplates() {
@@ -537,27 +560,64 @@ function closeLibrary() {
   $("library-modal").hidden = true;
 }
 
-// Rebuild the category <select> from the DATA (distinct template categories + TYPES keys),
-// preserving the current selection; drop the selection if its category no longer exists.
+// Export the user's library (saved templates + category colors) as a downloadable JSON file — the
+// only backup, since they live only in localStorage (no DB, no cloud).
+function exportLibrary() {
+  const data = { templates: customTemplates, types: customTypes };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "planner-library.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+// Import a previously-exported library: merge its templates (by label) + category colors, persist,
+// and re-render. Skips malformed entries; never wipes what you already have.
+function importLibrary(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try { data = JSON.parse(reader.result); }
+    catch { showAlert("Couldn't import — not a valid JSON library file."); return; }
+    if (data && Array.isArray(data.templates)) {
+      for (const t of data.templates) {
+        if (!t || !t.label || !Number.isFinite(t.minutes)) continue;
+        const tpl = { label: String(t.label), minutes: t.minutes, category: t.category || null, section: t.section || null };
+        const i = customTemplates.findIndex((x) => String(x.label).toLowerCase() === tpl.label.toLowerCase());
+        if (i > -1) customTemplates[i] = tpl;
+        else customTemplates.push(tpl);
+      }
+      saveTemplates();
+    }
+    if (data && data.types && typeof data.types === "object") {
+      Object.assign(customTypes, data.types);
+      Object.assign(TYPES, customTypes);
+      saveTypes();
+    }
+    renderLibraryList();
+  };
+  reader.readAsText(file);
+}
+
+// Rebuild the category filter CHIPS (All + one per category with a live count) and the "+ New"
+// autocomplete datalists, from the data (template categories + TYPES keys).
 function rebuildLibraryFilter() {
-  const sel = $("library-filter");
-  const cats = new Set();
-  for (const tpl of allTemplates()) if (tpl.category) cats.add(tpl.category);
+  const allTpls = allTemplates();
+  const counts = {};
+  for (const tpl of allTpls) if (tpl.category) counts[tpl.category] = (counts[tpl.category] || 0) + 1;
+  const cats = new Set(Object.keys(counts));
   for (const k of Object.keys(TYPES)) cats.add(k);
   const sorted = [...cats].sort((a, b) => a.localeCompare(b));
-  sel.innerHTML = "";
-  const all = document.createElement("option");
-  all.value = "";
-  all.textContent = "All categories";
-  sel.append(all);
-  for (const c of sorted) {
-    const opt = document.createElement("option");
-    opt.value = c;
-    opt.textContent = (TYPES[c] && TYPES[c].label) || c;
-    sel.append(opt);
+
+  const chips = $("library-chips");
+  if (chips) {
+    chips.innerHTML = "";
+    chips.append(libChip("", "All", allTpls.length, !libraryCategory, null));
+    for (const c of sorted) {
+      chips.append(libChip(c, (TYPES[c] && TYPES[c].label) || c, counts[c] || 0, libraryCategory === c, TYPES[c] && TYPES[c].color));
+    }
   }
-  if (libraryCategory && sorted.includes(libraryCategory)) sel.value = libraryCategory;
-  else { libraryCategory = ""; sel.value = ""; }
   // mirror the categories into the "+ New" datalist for autocomplete
   const dl = $("lib-cat-options");
   if (dl) {
@@ -572,7 +632,7 @@ function rebuildLibraryFilter() {
   const secDl = $("lib-sec-options");
   if (secDl) {
     const secs = new Set();
-    for (const tpl of allTemplates()) if (tpl.section) secs.add(tpl.section);
+    for (const tpl of allTpls) if (tpl.section) secs.add(tpl.section);
     for (const a of scenario.activities) if (a.section) secs.add(a.section);
     secDl.innerHTML = "";
     for (const s of [...secs].sort((a, b) => a.localeCompare(b))) {
@@ -581,6 +641,25 @@ function rebuildLibraryFilter() {
       secDl.append(o);
     }
   }
+}
+
+// One category filter chip: optional color dot + label + count; click to set or clear the filter.
+function libChip(value, label, count, active, color) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "lib-chip" + (active ? " active" : "");
+  if (color) {
+    const dot = makeEl("span", "", "lib-chip-dot");
+    dot.style.background = color;
+    chip.append(dot);
+  }
+  chip.append(makeEl("span", label, "lib-chip-label"));
+  chip.append(makeEl("span", String(count), "lib-chip-count"));
+  chip.onclick = () => {
+    libraryCategory = libraryCategory === value ? "" : value;
+    renderLibraryList();
+  };
+  return chip;
 }
 
 // Build one aligned grid row for a template (swatch · name · category · section · dur · actions).
@@ -606,8 +685,14 @@ function libRowEl(tpl) {
       section: tpl.section || null,
       type: tpl.category,
     });
+    pushRecent(tpl.label);
     render(); // roster + (debounced) timeline update; modal stays open
+    renderLibraryList(); // refresh the "recent" strip + "in plan" counts
   };
+  // "× N in plan": how many activities in the current plan came from this template (matched by id base).
+  const base = slug(tpl.label);
+  const used = scenario.activities.filter((a) => a.id === base || a.id.startsWith(base + "_")).length;
+  if (used > 0) actions.append(makeEl("span", "×" + used + " in plan", "lib-row-used"));
   actions.append(add);
   // User-saved templates get a "saved" tag + a × to remove; seed (library.json) rows don't.
   if (customTemplates.includes(tpl)) {
@@ -654,6 +739,16 @@ function renderLibraryList() {
   if (!rows.length) {
     box.append(makeEl("p", "No matches.", "hint"));
     return;
+  }
+  // Recently-used strip (only when not actively searching, so it doesn't crowd results).
+  const recentTpls = (!q && recents.length)
+    ? recents.map((label) => allTemplates().find((t) => t.label === label)).filter(Boolean)
+    : [];
+  if (recentTpls.length) {
+    box.append(makeEl("div", "Recent", "lib-group-head"));
+    const rfrag = document.createDocumentFragment();
+    for (const tpl of recentTpls) rfrag.append(libRowEl(tpl));
+    box.append(rfrag);
   }
   // Sticky column header (re-added each render so it stays pinned atop the scroll box).
   const head = document.createElement("div");
