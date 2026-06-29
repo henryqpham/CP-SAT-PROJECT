@@ -64,6 +64,12 @@ $("example-select").onchange = async (e) => {
 $("solve-btn").onclick = () => solveNow();
 $("view-toggle").onclick = () => setView(!overview);
 
+// "+ Activity": append a blank activity to the plan; CP-SAT places it, the Inspector edits it.
+$("add-activity").onclick = () => {
+  scenario.activities.push({ id: uniqueActivityId("activity"), duration: 30, section: null });
+  render();
+};
+
 // Solve the current in-memory scenario and draw the timeline. Reused by the
 // manual "Solve now" button and by the debounced live auto-solve below.
 function solveNow() {
@@ -335,11 +341,53 @@ function newConstraint(type) {
 
 // ---- rendering ----------------------------------------------------------
 function render() {
+  renderRoster();
   renderLibrary();
   renderDay();
   renderConstraints();
   renderInspector();
   scheduleSolve();
+}
+
+// ---- roster ("On this plan") -------------------------------------------
+// A clickable list of every activity in the plan: swatch + name + section + solved time, with a
+// × to remove it. Clicking a row selects that activity (highlights its bar + opens the Inspector)
+// without re-solving — same as clicking the bar on the timeline. Refreshed from render() and at
+// the end of drawTimeline() so solved times + the selected highlight stay current.
+function renderRoster() {
+  const box = $("roster");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!scenario.activities.length) {
+    box.append(makeEl("p", "No activities yet — add one with + Activity.", "hint"));
+    return;
+  }
+  for (const a of scenario.activities) {
+    const row = document.createElement("div");
+    row.className = "roster-row" + (a.id === selectedId ? " selected" : "");
+    const sw = makeEl("span", "", "roster-swatch");
+    sw.style.background = colorFor(a.id);
+    row.append(sw);
+    row.append(makeEl("span", a.id, "roster-name"));
+    row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
+    const s = shownSchedule && shownSchedule.find((x) => x.id === a.id);
+    row.append(makeEl("span", s ? `${hhmm(s.start)}–${hhmm(s.end)}` : "—", "roster-time"));
+    // Same as the timeline bar: re-highlight + open the Inspector, never re-solve.
+    row.onclick = () => {
+      selectedId = a.id;
+      drawTimeline(shownSchedule, shownStale);
+      renderInspector();
+    };
+    const x = deleteBtn((e) => {
+      e.stopPropagation(); // don't also select the row
+      const i = scenario.activities.findIndex((y) => y.id === a.id);
+      if (i >= 0) scenario.activities.splice(i, 1);
+      if (selectedId === a.id) selectedId = null;
+      render();
+    });
+    x.classList.add("roster-del");
+    row.append(x);
+  }
 }
 
 // ---- library (activity palette) ----------------------------------------
@@ -362,16 +410,6 @@ function renderLibrary() {
   const box = $("lib-templates");
   if (!box) return;
   box.innerHTML = "";
-  // "+ Activity" makes a blank activity to name + edit in the Inspector — no presets needed.
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "btn btn-ghost btn-sm lib-new";
-  add.textContent = "+ Activity";
-  add.onclick = () => {
-    scenario.activities.push({ id: uniqueActivityId("activity"), duration: 30, section: null });
-    render();
-  };
-  box.append(add);
   // Any templates you've saved in static/library.json (none by default):
   for (const tpl of LIBRARY) {
     const row = document.createElement("button");
@@ -622,6 +660,7 @@ function drawTimeline(schedule, stale) {
   tl.append(g);
   const leg = buildLegend();
   if (leg) tl.append(leg);
+  renderRoster(); // refresh solved times + the selected-row highlight after every redraw
 }
 
 // A small legend of the activity types currently in use (color swatch -> label).

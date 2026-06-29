@@ -387,7 +387,22 @@ select:focus {
   color: var(--muted); background: var(--track); border-radius: 999px; padding: 0.1rem 0.4rem;
 }
 .lib-dur { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 2.2rem; text-align: right; }
-.lib-new { width: 100%; margin-bottom: 0.5rem; }
+
+/* roster ("On this plan"): the activities currently in the plan */
+#roster { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
+.roster-row {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  cursor: pointer; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.35rem 0.5rem;
+}
+.roster-row:hover { border-color: var(--accent); background: #f8faff; }
+.roster-row.selected { border-color: var(--accent); background: #eef2ff; }
+.roster-swatch { width: 0.7rem; height: 0.7rem; border-radius: 3px; flex: 0 0 auto; }
+.roster-name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-section { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+.roster-time { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.roster-del { font-size: 1.05rem; } /* .del already handles color/hover; this just trims it down */
 
 /* saved-plan tabs ("missions") across the top */
 .tabs { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
