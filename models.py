@@ -77,8 +77,18 @@ class TimeWindow(_Constraint):
     activity: str
     earliest: Optional[str] = None    # "HH:MM"
     latest_end: Optional[str] = None  # "HH:MM"
+    # Which 0-based mission day the clock applies to. None = day 0 (back-compat). day=2 means the
+    # earliest/latest_end are clock times on the 3rd day, e.g. "undock by 18:00 on day 3".
+    day: Optional[int] = None
 
     _check_times = field_validator("earliest", "latest_end")(_validate_hhmm)
+
+    @field_validator("day")
+    @classmethod
+    def _check_day(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("day must be a non-negative day index")
+        return v
 
 
 class NoOverlap(_Constraint):
@@ -126,6 +136,17 @@ class WorkingWindow(_Constraint):
         return v
 
 
+class Overlap(_Constraint):
+    # Tie two one-off activities together in TIME. mode="contains": `outer` fully covers `inner`
+    # (outer.start <= inner.start AND inner.end <= outer.end) — e.g. "comms coverage runs DURING the
+    # EVA tasks". mode="overlaps": the two intervals merely share at least one minute. Display-and-
+    # solve; references must be one-off ids (a recurring activity's occurrence key is "<id>#d<n>").
+    type: Literal["overlap"] = "overlap"
+    outer: str
+    inner: str
+    mode: Literal["contains", "overlaps"] = "contains"
+
+
 class SectionBudget(_Constraint):
     # A time BUDGET for a section: the total busy minutes of every activity in that section must
     # stay within `max_minutes`. It only bounds a SUM (not placement), so it can't shuffle the
@@ -144,7 +165,7 @@ class SectionBudget(_Constraint):
 
 # The discriminated union: pick the variant by its "type" field.
 Constraint = Annotated[
-    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow, SectionBudget],
+    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow, SectionBudget, Overlap],
     Field(discriminator="type"),
 ]
 

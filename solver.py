@@ -215,15 +215,16 @@ def solve(scenario: Scenario) -> dict:
             continue
 
         if c.type == "time_window":
-            # earliest/latest_end are absolute minutes from the plan start (day-1 clock time).
-            # On a multi-day horizon this still pins the activity inside day 1 — there is no
-            # "by 22:00 on day 3" yet. Per-day time windows are a planned follow-up.
+            # earliest/latest_end are clock times; `day` picks which 0-based mission day they fall on
+            # (None = day 0, the day-1-absolute back-compat behavior). The offset shifts the clock onto
+            # that day, so "latest_end 18:00, day 2" means "ends by 18:00 on the 3rd day".
             if c.activity not in starts:
                 continue
+            offset = (c.day or 0) * DAY
             if c.earliest is not None:
-                model.add(starts[c.activity] >= _to_minutes(c.earliest))
+                model.add(starts[c.activity] >= offset + _to_minutes(c.earliest))
             if c.latest_end is not None:
-                model.add(ends[c.activity] <= _to_minutes(c.latest_end))
+                model.add(ends[c.activity] <= offset + _to_minutes(c.latest_end))
 
         elif c.type == "working_window":
             # A working window's CLOSED complement is forbidden time. Build fixed "closed"
@@ -278,6 +279,20 @@ def solve(scenario: Scenario) -> dict:
             for before, after in zip(c.activities, c.activities[1:]):
                 if before != after:
                     add_precedence(before, after)
+
+        elif c.type == "overlap":
+            # Tie two activities together in time. Like add_precedence, skip unless BOTH are real
+            # one-off ids (a bare recurring id won't be in starts — its key is "<id>#d<n>"). The
+            # relation is on the start/end vars, NOT gated by presence: if `inner` is an optional
+            # activity that gets dropped, the bound becomes vacuous rather than infeasible (same as
+            # precedence on an optional) — fine here since neither overlap target is droppable.
+            if c.outer in starts and c.inner in starts:
+                if c.mode == "contains":
+                    model.add(starts[c.outer] <= starts[c.inner])  # outer fully covers inner
+                    model.add(ends[c.inner] <= ends[c.outer])
+                else:  # "overlaps": the two intervals share at least one minute
+                    model.add(starts[c.outer] < ends[c.inner])
+                    model.add(starts[c.inner] < ends[c.outer])
 
         elif c.type == "section_budget":
             # Total busy minutes in the section must stay within the cap. Sum each member

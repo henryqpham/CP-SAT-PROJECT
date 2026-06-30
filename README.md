@@ -121,11 +121,16 @@ CP-SAT-PROJECT/
 One typed JSON document you build and edit by hand. Each constraint `type` maps 1:1 to a CP-SAT
 call; `enabled` toggles a rule without losing its numbers. The constraint types are:
 
-- `time_window` — an `earliest` start and/or `latest_end` (`"HH:MM"`) for one `activity`.
+- `time_window` — an `earliest` start and/or `latest_end` (`"HH:MM"`) for one `activity`. An optional
+  `day` (0-based) puts the clock on a chosen mission day, so multi-day deadlines work: *`latest_end`
+  18:00, `day` 2* = "ends by 18:00 on the 3rd day". Omit `day` for the day-1 clock (back-compat).
 - `no_overlap` — a set of `activities` (or `"all"`) that can't run at the same time.
 - `precedence` — one activity (`before`) must finish before another (`after`) starts.
 - `sequence` — an ordered chain of `activities`; each one ends before the next begins (the
   multi-activity generalization of `precedence`).
+- `overlap` — tie two activities together in time: `mode: "contains"` forces `outer` to fully cover
+  `inner` (e.g. comms coverage runs *during* the EVA tasks); `mode: "overlaps"` just makes them
+  share time. Unlike `precedence` (which only orders), this pins one activity *onto* another.
 - `conditional` — a `when` / `then` rule, e.g. *when* kiteboard is absent, *then* set sail's
   duration ×2.
 - `working_window` — open hours for a `section` (or `"all"`): `open` / `close` (`"HH:MM"`). Unlike
@@ -157,10 +162,9 @@ only the per-day occurrences, e.g. `lunch#d2`, exist in the solve.)
 
 Activities run free across the planning **horizon** — one 24h day by default, or set
 `"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity
-`time_window` constraints are what pin them down — note their `earliest` / `latest_end` are day-1
-clock times (absolute minutes from the plan start), so on a multi-day horizon they still hold an
-activity inside the first day; per-day deadlines ("by 22:00 on day 3") are a planned follow-up. Full
-example in `examples/lake.json`:
+`time_window` constraints are what pin them down — their `earliest` / `latest_end` are clock times on
+a chosen `day` (0-based; omit it for day 1), so multi-day deadlines like "undock by 18:00 on day 3"
+work directly. Full example in `examples/lake.json`:
 
 ```jsonc
 {

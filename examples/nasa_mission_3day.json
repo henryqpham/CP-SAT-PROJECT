@@ -517,13 +517,14 @@
       "source": "strict EVA protocol; prebreathe immediately precedes egress, no break"
     },
     {
-      "type": "precedence",
+      "type": "overlap",
       "id": "c24",
-      "before": "comms_eva_conf",
-      "after": "comms_eva_coverage",
+      "outer": "comms_eva_coverage",
+      "inner": "eva_tasks_C",
+      "mode": "contains",
       "enabled": true,
-      "label": "Go/no-go conference before ground coverage is established",
-      "source": "ground brings up continuous EVA comms coverage once the conference clears the EVA; coverage then runs in parallel with the EVA (the IR cannot force an overlap, so coverage floats alongside the tasks block)"
+      "label": "Ground comms coverage runs DURING the EVA tasks",
+      "source": "ground keeps continuous EVA comms coverage over the EVA tasks block; 'contains' forces coverage to span the tasks (equal durations -> coverage sits exactly over the tasks)"
     },
     {
       "type": "conditional",
@@ -639,6 +640,97 @@
       "enabled": true,
       "label": "Crew D sleeps at night (22:00-06:00)",
       "source": "crew sleep is a protected nightly 8h block"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_rcsB",
+      "activity": "orion_rcs_B_1",
+      "earliest": "07:00",
+      "day": 0,
+      "enabled": true,
+      "label": "Crew B starts after the day-1 wake (07:00)",
+      "source": "no crew works the dead of night; Crew B's first task is no earlier than the day-1 wake"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_preslA",
+      "activity": "pre_sleep_A_1",
+      "earliest": "20:00",
+      "latest_end": "22:00",
+      "day": 0,
+      "enabled": true,
+      "label": "Crew A pre-sleep wind-down, evening of day 1 (20:00-22:00)",
+      "source": "the pre-sleep hour is the evening wind-down immediately before lights-out"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_preslA2",
+      "activity": "pre_sleep_A_2",
+      "earliest": "20:00",
+      "latest_end": "22:00",
+      "day": 1,
+      "enabled": true,
+      "label": "Crew A pre-sleep wind-down, evening of day 2 (20:00-22:00)",
+      "source": "the pre-sleep hour is the evening wind-down immediately before lights-out"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_evaconf",
+      "activity": "comms_eva_conf",
+      "earliest": "06:00",
+      "latest_end": "09:00",
+      "day": 2,
+      "enabled": true,
+      "label": "EVA go/no-go conference, morning of EVA day (day 3)",
+      "source": "the go/no-go conference is held the morning of the EVA, hours before suit-up"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_pao",
+      "activity": "comms_pao",
+      "earliest": "06:00",
+      "latest_end": "18:00",
+      "day": 2,
+      "enabled": true,
+      "label": "PAO event on EVA day (day 3)",
+      "source": "the public-affairs event runs on the EVA day, not days earlier"
+    },
+    {
+      "type": "time_window",
+      "id": "tw_undock",
+      "activity": "hls_undock_D",
+      "latest_end": "18:00",
+      "day": 2,
+      "enabled": true,
+      "label": "HLS undock complete by 18:00 on day 3",
+      "source": "a hard mission milestone: undocking must complete by 18:00 on the final day"
+    },
+    {
+      "type": "precedence",
+      "id": "c26",
+      "before": "sleep_B_1",
+      "after": "sleep_B_2",
+      "enabled": true,
+      "label": "Crew B sleeps night 1 before night 2",
+      "source": "the first night's sleep precedes the second night's"
+    },
+    {
+      "type": "precedence",
+      "id": "c27",
+      "before": "sleep_C_1",
+      "after": "sleep_C_2",
+      "enabled": true,
+      "label": "Crew C sleeps night 1 before night 2",
+      "source": "the first night's sleep precedes the second night's"
+    },
+    {
+      "type": "precedence",
+      "id": "c28",
+      "before": "sleep_D_1",
+      "after": "sleep_D_2",
+      "enabled": true,
+      "label": "Crew D sleeps night 1 before night 2",
+      "source": "the first night's sleep precedes the second night's"
     }
   ],
   "horizon": 4320

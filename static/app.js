@@ -127,6 +127,7 @@ function barColor(item) {
 addConstraintType("sequence", "Sequence (ordered)");
 addConstraintType("working_window", "Working window (open hours)");
 addConstraintType("section_budget", "Section budget (max minutes)");
+addConstraintType("overlap", "Overlap (one runs during another)");
 
 $("parse-btn").onclick = () =>
   withBusy($("parse-btn"), "Parsing…", async () => {
@@ -750,9 +751,11 @@ function newConstraint(type) {
   // label starts blank. The activity refs just point at whatever's already in the plan.
   const base = { id: uniqueConstraintId(), type, enabled: true, source: "", label: "" };
   if (type === "time_window")
-    return { ...base, activity: a0, earliest: null, latest_end: null };
+    return { ...base, activity: a0, earliest: null, latest_end: null, day: null };
   if (type === "precedence")
     return { ...base, before: a0, after: a1 };
+  if (type === "overlap")
+    return { ...base, outer: a0, inner: a1, mode: "contains" };
   if (type === "no_overlap")
     return { ...base, activities: "all" };
   if (type === "sequence") {
@@ -1523,7 +1526,7 @@ function conPageSize() {
 const CON_TYPE_LABEL = {
   time_window: "Time window", no_overlap: "No overlap", precedence: "Precedence",
   sequence: "Sequence", conditional: "Conditional", working_window: "Working window",
-  section_budget: "Section budget",
+  section_budget: "Section budget", overlap: "Overlap",
 };
 function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
 // Type -> tint color (a CSS var string), used as the card's --cat border/wash. Mirrors the old
@@ -1531,7 +1534,7 @@ function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
 const CON_TYPE_COLOR = {
   time_window: "var(--accent)", working_window: "var(--accent)", precedence: "var(--ok)",
   sequence: "var(--warn)", conditional: "var(--violet)", no_overlap: "var(--muted)",
-  section_budget: "var(--warn)",
+  section_budget: "var(--warn)", overlap: "var(--violet)",
 };
 function constraintTypeColor(t) { return CON_TYPE_COLOR[t] || "var(--muted)"; }
 
@@ -1550,7 +1553,11 @@ function sectionBusyMinutes(section) {
 function constraintSummary(c) {
   if (c.type === "time_window") {
     const w = [c.earliest && "≥ " + c.earliest, c.latest_end && "≤ " + c.latest_end].filter(Boolean).join(", ");
-    return (c.activity || "—") + (w ? " · " + w : "");
+    const d = c.day != null ? " · Day " + (c.day + 1) : "";
+    return (c.activity || "—") + (w ? " · " + w : "") + d;
+  }
+  if (c.type === "overlap") {
+    return (c.outer || "—") + (c.mode === "overlaps" ? " ∩ " : " ⊇ ") + (c.inner || "—");
   }
   if (c.type === "no_overlap") {
     return "no overlap · " + (c.activities === "all" || c.activities == null ? "all activities" : (c.activities.length + " activities"));
@@ -1705,9 +1712,19 @@ function constraintFields(c) {
     f.push(activitySelect("activity", c.activity, (v) => (c.activity = v)));
     f.push(textField("earliest (HH:MM)", c.earliest || "", (v) => (c.earliest = v || null)));
     f.push(textField("latest end (HH:MM)", c.latest_end || "", (v) => (c.latest_end = v || null)));
+    // Which mission day the clock falls on. Stored 0-based (0 = Day 1); blank = Day 1.
+    f.push(textField("day (0 = Day 1, blank = Day 1)", c.day == null ? "" : String(c.day),
+      (v) => { const n = parseInt(v, 10); c.day = v.trim() === "" || !Number.isFinite(n) ? null : Math.max(0, n); }));
   } else if (c.type === "precedence") {
     f.push(activitySelect("before", c.before, (v) => (c.before = v)));
     f.push(activitySelect("after", c.after, (v) => (c.after = v)));
+  } else if (c.type === "overlap") {
+    f.push(activitySelect("outer (covers)", c.outer, (v) => (c.outer = v)));
+    f.push(activitySelect("inner (covered)", c.inner, (v) => (c.inner = v)));
+    f.push(selectField("mode", c.mode || "contains", [
+      { value: "contains", label: "outer fully covers inner (during)" },
+      { value: "overlaps", label: "intervals merely overlap" },
+    ], (v) => (c.mode = v)));
   } else if (c.type === "no_overlap") {
     const isAll = c.activities === "all" || c.activities == null;
     f.push(selectField("applies to", isAll ? "all" : "specific", [
@@ -2199,6 +2216,10 @@ function shadeClosedLanes(g, pct, lo, hi, groups) {
       if (o == null || cl == null || o === cl) continue;
       const gaps = o < cl ? [[0, o], [cl, DAY]] : [[cl, o]];
       for (let day0 = 0; day0 < hi; day0 += DAY) {
+        // honor the window's `days` (like the solver does) — a day-gated window (e.g. an HLS/xEVA
+        // phase-gate on days [0]) must only shade the days it applies to, not every day.
+        const dayIdx = Math.round(day0 / DAY);
+        if (Array.isArray(w.days) && !w.days.includes(dayIdx)) continue;
         for (const [g0, g1] of gaps) {
           const s = Math.max(lo, day0 + g0), e = Math.min(hi, day0 + g1);
           if (e <= s) continue;
@@ -2228,14 +2249,24 @@ function mergeIntervals(spans) {
   return out;
 }
 
-// Orientation shading behind ALL lanes: --night-band over the hours the crew sleeps and --comms-band
-// over comms-coverage windows. Both are DERIVED from the scheduled items (the union of sleep-kind /
-// comms-kind spans), so there are no hardcoded clock hours — the bands move with the actual plan.
+// Minimum block length (minutes) for an activity to count toward the night band. Real sleep blocks
+// are multi-hour; short "pre/post-sleep" wake/wind-down transitions are kind=sleep too, but they
+// aren't night — without this floor they'd drag the night shading into morning wake hours.
+const NIGHT_MIN_BLOCK = 180;
+
+// Orientation shading behind ALL lanes: --night-band over the hours the crew actually sleeps and
+// --comms-band over comms windows. DERIVED from the scheduled items (no hardcoded clock hours) — the
+// night band uses only substantial sleep blocks (>= NIGHT_MIN_BLOCK) so wake/wind-down doesn't leak in.
 function shadeContextBands(g, pct, lo, hi, schedule) {
   const tracks = g.querySelectorAll(".gantt-track.lane");
   if (!tracks.length) return;
-  for (const { cls, kind } of [{ cls: "night-band", kind: "sleep" }, { cls: "comms-band", kind: "comms" }]) {
-    const merged = mergeIntervals(schedule.filter((it) => kindOf(it) === kind).map((it) => [it.start, it.end]));
+  for (const { cls, kind, minBlock } of [
+    { cls: "night-band", kind: "sleep", minBlock: NIGHT_MIN_BLOCK },
+    { cls: "comms-band", kind: "comms", minBlock: 0 },
+  ]) {
+    const merged = mergeIntervals(
+      schedule.filter((it) => kindOf(it) === kind && it.end - it.start >= minBlock).map((it) => [it.start, it.end])
+    );
     if (!merged.length) continue;
     for (const track of tracks) {
       for (const [s0, e0] of merged) {
@@ -2549,7 +2580,8 @@ function activityCaps() {
     if (c.type !== "time_window" || c.enabled === false || !c.latest_end) continue;
     const d = toMin(c.latest_end);
     if (d == null) continue;
-    if (!dl.has(c.activity) || d < dl.get(c.activity)) dl.set(c.activity, d);
+    const cap = d + (c.day || 0) * DAY; // day-relative deadline -> shift the cap onto its mission day
+    if (!dl.has(c.activity) || cap < dl.get(c.activity)) dl.set(c.activity, cap);
   }
   return { dl };
 }
