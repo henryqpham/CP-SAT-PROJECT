@@ -21,6 +21,12 @@ let tabs = [];
 let activeTab = 0;
 const TABS_KEY = "planner.tabs.v1";
 const clone = (x) => JSON.parse(JSON.stringify(x));
+// Undo/redo: snapshots of the scenario as JSON strings. histPresent is the last recorded state;
+// rapid edits are coalesced (debounced) into one entry so typing isn't one-undo-per-keystroke.
+let histUndo = [];
+let histRedo = [];
+let histPresent = "null";
+let histTimer = null;
 
 const $ = (id) => document.getElementById(id);
 const DAY = 24 * 60;
@@ -50,6 +56,7 @@ const colorFor = (id) => {
 // ---- wiring -------------------------------------------------------------
 addConstraintType("sequence", "Sequence (ordered)");
 addConstraintType("working_window", "Working window (open hours)");
+addConstraintType("section_budget", "Section budget (max minutes)");
 
 $("parse-btn").onclick = () =>
   withBusy($("parse-btn"), "Parsing…", async () => {
@@ -61,6 +68,25 @@ $("parse-btn").onclick = () =>
 
 $("solve-btn").onclick = () => solveNow();
 $("view-toggle").onclick = () => setView(!overview);
+
+// Undo / redo + plan file actions (save / load / duplicate). State/presentation only — the solver
+// still runs on the live plan; these just move snapshots around.
+$("undo-btn").onclick = undo;
+$("redo-btn").onclick = redo;
+$("plan-duplicate").onclick = duplicateTab;
+$("plan-export").onclick = exportPlan;
+$("plan-import").onclick = () => $("plan-import-file").click();
+$("plan-import-file").onchange = (e) => { if (e.target.files[0]) importPlan(e.target.files[0]); e.target.value = ""; };
+// Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo — but only when NOT typing in a field,
+// so a focused text input keeps its own native undo.
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+});
 
 // Timeline zoom sliders + "Fit" reset. These only restyle the drawn chart — no re-solve.
 $("zoom-x").oninput = (e) => { zoomX = parseFloat(e.target.value) || 1; applyZoom(); };
@@ -188,6 +214,7 @@ function solveNow() {
 // Live auto-solve: re-solve ~250ms after the last edit (trailing debounce).
 let solveTimer = null;
 function scheduleSolve() {
+  recordHistory(); // snapshot the live plan for undo/redo (debounced; no-op if nothing changed)
   clearTimeout(solveTimer);
   // Editing an Add-constraint draft (not yet in the plan): don't re-solve the live plan, and don't
   // let an empty-plan draft edit fall through to clearResult() below and wipe the timeline.
@@ -331,6 +358,7 @@ $("sentence").addEventListener("keydown", (e) => {
     activeTab = 0;
     saveTabs();
   }
+  resetHistory(); // baseline the undo history for the plan we just loaded
   renderTabs();
   render();
 })();
@@ -393,6 +421,7 @@ function switchTab(i) {
   scenario = clone(tabs[i].scenario);
   selectedId = null;
   resetRosterFilter();
+  resetHistory();
   renderTabs();
   render();
 }
@@ -403,6 +432,7 @@ function newTab() {
   scenario = clone(tabs[activeTab].scenario);
   selectedId = null;
   resetRosterFilter();
+  resetHistory();
   saveTabs();
   renderTabs();
   render();
@@ -414,6 +444,7 @@ function deleteTab(i) {
   scenario = clone(tabs[activeTab].scenario);
   selectedId = null;
   resetRosterFilter();
+  resetHistory();
   saveTabs();
   renderTabs();
   render();
@@ -425,6 +456,119 @@ function renameTab(i) {
     saveTabs();
     renderTabs();
   }
+}
+
+// ---- undo / redo (per plan) --------------------------------------------
+// Record the current scenario into history, debounced so a burst of edits (typing a name, dragging
+// a slider) collapses into ONE undo step. scheduleSolve() — which every mutation funnels through —
+// is the single call site, so we don't have to instrument each individual edit.
+function recordHistory() {
+  updateHistoryButtons();              // reflect the pending change in the buttons right away
+  clearTimeout(histTimer);
+  histTimer = setTimeout(flushHistory, 400);
+}
+// Commit any pending change onto the undo stack. Idempotent: a no-op when nothing changed.
+function flushHistory() {
+  clearTimeout(histTimer);
+  const cur = JSON.stringify(scenario);
+  if (cur === histPresent) return;
+  histUndo.push(histPresent);
+  if (histUndo.length > 50) histUndo.shift(); // bound memory
+  histPresent = cur;
+  histRedo = [];                              // a fresh edit abandons the redo path
+  updateHistoryButtons();
+}
+// Start a clean history baseline for the current scenario (on load and whenever we switch plans, so
+// undo never crosses from one plan into another).
+function resetHistory() {
+  clearTimeout(histTimer);
+  histUndo = [];
+  histRedo = [];
+  histPresent = JSON.stringify(scenario);
+  updateHistoryButtons();
+}
+function undo() {
+  flushHistory();                  // bank the latest in-flight edit first, so it's undoable
+  if (!histUndo.length) return;
+  histRedo.push(histPresent);
+  histPresent = histUndo.pop();
+  applyHistory();
+}
+function redo() {
+  if (!histRedo.length) return;
+  histUndo.push(histPresent);
+  histPresent = histRedo.pop();
+  applyHistory();
+}
+// Swap the live scenario to histPresent and refresh everything (render() re-solves). recordHistory
+// fires from that render but no-ops, since scenario now equals histPresent.
+function applyHistory() {
+  scenario = JSON.parse(histPresent);
+  selectedId = null;
+  resetRosterFilter();
+  saveTabs();
+  renderTabs();
+  render();
+  updateHistoryButtons();
+}
+function updateHistoryButtons() {
+  const u = $("undo-btn"), r = $("redo-btn");
+  if (u) u.disabled = !(histUndo.length || JSON.stringify(scenario) !== histPresent);
+  if (r) r.disabled = !histRedo.length;
+}
+
+// ---- plan files (save / load / duplicate) ------------------------------
+// Duplicate the active plan into a new tab and switch to it.
+function duplicateTab() {
+  saveTabs();
+  const src = tabs[activeTab];
+  tabs.push({ name: (src ? src.name : "Plan") + " copy", scenario: clone(scenario) });
+  activeTab = tabs.length - 1;
+  scenario = clone(tabs[activeTab].scenario);
+  selectedId = null;
+  resetRosterFilter();
+  resetHistory();
+  saveTabs();
+  renderTabs();
+  render();
+}
+// Save the active plan (its scenario + name) to a downloadable JSON file — the portable backup,
+// since plans otherwise live only in localStorage (no DB, no cloud).
+function exportPlan() {
+  const name = (tabs[activeTab] && tabs[activeTab].name) || "plan";
+  const blob = new Blob([JSON.stringify({ name, scenario }, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name.replace(/[^\w.-]+/g, "_").toLowerCase() + ".plan.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+// Load a plan file into a NEW tab (never overwrites the active plan). Accepts either the wrapped
+// { name, scenario } shape exportPlan writes, or a bare scenario { activities, constraints }.
+function importPlan(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try { data = JSON.parse(reader.result); }
+    catch { showAlert("Couldn't import — not a valid JSON plan file."); return; }
+    const sc = data && data.scenario ? data.scenario : data;
+    if (!sc || !Array.isArray(sc.activities) || !Array.isArray(sc.constraints)) {
+      showAlert("Couldn't import — the file isn't a plan (needs activities + constraints).");
+      return;
+    }
+    saveTabs();
+    tabs.push({ name: (data && data.name) || "Imported plan", scenario: clone(sc) });
+    activeTab = tabs.length - 1;
+    scenario = clone(sc);
+    selectedId = null;
+    resetRosterFilter();
+    resetHistory();
+    saveTabs();
+    renderTabs();
+    render();
+  };
+  reader.readAsText(file);
 }
 
 // ---- network ------------------------------------------------------------
@@ -548,6 +692,12 @@ function newConstraint(type) {
     };
   if (type === "working_window")
     return { ...base, section: "all", open: "09:00", close: "17:00", days: "all" };
+  if (type === "section_budget") {
+    // A budget is per-section, so seed it with a real section (not "all") and a cap at the
+    // section's current usage, so it starts as a no-op the user can tighten.
+    const sec = scenario.activities.map((a) => a.section && a.section.trim()).find(Boolean) || "";
+    return { ...base, section: sec, max_minutes: sectionBusyMinutes(sec) || 480 };
+  }
   return base;
 }
 
@@ -1233,6 +1383,7 @@ function conPageSize() {
 const CON_TYPE_LABEL = {
   time_window: "Time window", no_overlap: "No overlap", precedence: "Precedence",
   sequence: "Sequence", conditional: "Conditional", working_window: "Working window",
+  section_budget: "Section budget",
 };
 function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
 // Type -> tint color (a CSS var string), used as the card's --cat border/wash. Mirrors the old
@@ -1240,8 +1391,20 @@ function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
 const CON_TYPE_COLOR = {
   time_window: "var(--accent)", working_window: "var(--accent)", precedence: "var(--ok)",
   sequence: "var(--warn)", conditional: "var(--violet)", no_overlap: "var(--muted)",
+  section_budget: "var(--warn)",
 };
 function constraintTypeColor(t) { return CON_TYPE_COLOR[t] || "var(--muted)"; }
+
+// Total busy minutes currently in a section: sum of its activities' durations, counting a recurring
+// activity once per day of the solved horizon (matching how the solver sums a section_budget). A
+// quick estimate for the budget UI — the solver is the source of truth.
+function sectionBusyMinutes(section) {
+  if (!section) return 0;
+  const days = Math.max(1, Math.floor((solvedHorizon || DAY) / DAY));
+  return scenario.activities
+    .filter((a) => (a.section && a.section.trim()) === section)
+    .reduce((s, a) => s + (Number(a.duration) || 0) * (a.recurs_daily ? days : 1), 0);
+}
 
 // One-line summary shown on a collapsed row, so 200 constraints are scannable without expanding.
 function constraintSummary(c) {
@@ -1260,6 +1423,9 @@ function constraintSummary(c) {
   }
   if (c.type === "working_window") {
     return (c.section || "all") + " · " + c.open + "–" + c.close + " · " + (c.days === "all" ? "every day" : "days " + (c.days || []).join(","));
+  }
+  if (c.type === "section_budget") {
+    return (c.section || "—") + " · ≤ " + dur(c.max_minutes || 0);
   }
   return c.type;
 }
@@ -1439,6 +1605,25 @@ function constraintFields(c) {
     ], (v) => { c.section = v; render(); }));
     f.push(textField("open (HH:MM)", c.open || "", (v) => (c.open = v)));
     f.push(textField("close (HH:MM)", c.close || "", (v) => (c.close = v)));
+  } else if (c.type === "section_budget") {
+    const secs = [...new Set(
+      scenario.activities.map((a) => a.section && a.section.trim()).filter(Boolean)
+    )];
+    f.push(selectField("section", c.section || (secs[0] || ""),
+      secs.length ? secs.map((s) => ({ value: s, label: "Section: " + s }))
+                  : [{ value: "", label: "(no sections yet)" }],
+      (v) => { c.section = v; render(); }));
+    f.push(numField("max minutes", c.max_minutes,
+      (v) => { if (Number.isFinite(v) && v > 0) c.max_minutes = v; }));
+    // Live usage hint so the user picks a sensible cap (and sees when it's already over).
+    if (c.section) {
+      const used = sectionBusyMinutes(c.section);
+      const over = Number.isFinite(c.max_minutes) && used > c.max_minutes;
+      f.push(makeEl("p",
+        (over ? "⚠ " : "") + `${c.section} currently uses ${dur(used)}`
+          + (over ? ` — over the ${dur(c.max_minutes)} cap` : ""),
+        "hint"));
+    }
   }
   return f;
 }
@@ -1457,6 +1642,9 @@ function renderResult(result) {
   const banner = $("banner");
   banner.hidden = true;
   banner.textContent = "";
+  // Every new result clears any open "why infeasible" explanation from the previous solve.
+  const explain = $("explain");
+  if (explain) { explain.hidden = true; explain.innerHTML = ""; }
 
   if (status === "OPTIMAL" || status === "FEASIBLE") {
     solvedHorizon = result.horizon || DAY; // size the timeline to what the solver used
@@ -1476,12 +1664,21 @@ function renderResult(result) {
   if (status === "INFEASIBLE") {
     banner.hidden = false;
     banner.className = "banner banner-bad";
+    banner.textContent = "";
+    banner.append(makeEl("span",
+      lastFeasibleSchedule
+        ? "That change broke the schedule — nothing fits all the rules now."
+        : "No schedule satisfies all enabled constraints.",
+      "banner-msg"));
+    // On-demand explainer: ask the solver which rules actually conflict (kept off the hot path).
+    const why = makeEl("button", "🔍 Which rules conflict?", "btn btn-sm banner-why");
+    why.type = "button";
+    why.onclick = () => explainInfeasible(why);
+    banner.append(why);
     if (lastFeasibleSchedule) {
-      banner.textContent = "That change broke the schedule — nothing fits all the rules now.";
       renderHealth(status, lastFeasibleSchedule, true);
       drawTimeline(lastFeasibleSchedule, true);
     } else {
-      banner.textContent = "No schedule satisfies all enabled constraints. Try disabling one, or loosen a time window.";
       renderHealth(status, null, false);
       $("timeline").innerHTML = "";
     }
@@ -1492,6 +1689,65 @@ function renderResult(result) {
   banner.textContent = "Solver returned: " + status;
   renderHealth(status, null, false);
   $("timeline").innerHTML = "";
+}
+
+// Ask /explain which enabled rules actually conflict (a MINIMAL set — turn off any one to resolve
+// it) and list them with a one-click "Disable". On-demand so the live solve loop stays fast.
+async function explainInfeasible(btn) {
+  const panel = $("explain");
+  if (!panel) return;
+  panel.hidden = false;
+  panel.innerHTML = "";
+  panel.append(makeEl("p", "Checking which rules conflict…", "explain-status"));
+  if (btn) btn.disabled = true;
+  let result;
+  try {
+    result = await post("/explain", solvePayload());
+  } catch (err) {
+    panel.innerHTML = "";
+    panel.append(makeEl("p", err.message, "explain-status"));
+    return;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  panel.innerHTML = "";
+  if (result.structural) {
+    panel.append(makeEl("p",
+      "No single rule is the cause — even with every rule off, the activities don't fit. There's "
+      + "too much work for the planning window, or a section is over-packed. Try a longer horizon, "
+      + "fewer/shorter activities, or a higher section budget.",
+      "explain-status"));
+    return;
+  }
+  const ids = result.conflict_ids || [];
+  if (!ids.length) {
+    panel.append(makeEl("p", "It looks like the plan solves now — try Solve again.", "explain-status"));
+    return;
+  }
+  panel.append(makeEl("p",
+    ids.length === 1
+      ? "This rule can't be satisfied with the rest — turn it off to resolve the conflict:"
+      : `These ${ids.length} rules can't all hold at once — turn off any one to resolve the conflict:`,
+    "explain-status"));
+  const list = makeEl("div", "", "explain-list");
+  for (const id of ids) {
+    const c = scenario.constraints.find((x) => x.id === id);
+    if (!c) continue;
+    const row = makeEl("div", "", "explain-row");
+    row.style.setProperty("--cat", constraintTypeColor(c.type));
+    const txt = makeEl("div", "", "explain-row-txt");
+    txt.append(makeEl("div", c.label || constraintTypeLabel(c.type), "explain-row-name"));
+    txt.append(makeEl("div", constraintTypeLabel(c.type) + " · " + constraintSummary(c), "explain-row-meta"));
+    if (c.source) txt.append(makeEl("div", "“" + c.source + "”", "explain-row-src"));
+    row.append(txt);
+    const off = makeEl("button", "Disable", "btn btn-sm");
+    off.type = "button";
+    off.title = "Turn this rule off and re-solve";
+    off.onclick = () => { c.enabled = false; panel.hidden = true; render(); };
+    row.append(off);
+    list.append(row);
+  }
+  panel.append(list);
 }
 
 // Draw (or redraw) the timeline. Kept separate so a section-collapse toggle can redraw

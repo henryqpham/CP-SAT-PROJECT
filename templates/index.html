@@ -25,6 +25,16 @@
 
       <nav class="tabs" id="tabs" aria-label="Saved plans"></nav>
 
+      <div class="plan-actions" role="toolbar" aria-label="Plan actions">
+        <button type="button" id="undo-btn" class="btn btn-ghost btn-sm" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+        <button type="button" id="redo-btn" class="btn btn-ghost btn-sm" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>
+        <span class="plan-actions-sep" aria-hidden="true"></span>
+        <button type="button" id="plan-duplicate" class="btn btn-ghost btn-sm" title="Duplicate this plan into a new tab">⧉ Duplicate</button>
+        <button type="button" id="plan-export" class="btn btn-ghost btn-sm" title="Save this plan to a file">⭳ Export</button>
+        <button type="button" id="plan-import" class="btn btn-ghost btn-sm" title="Load a plan from a file (opens a new tab)">⭱ Import</button>
+        <input type="file" id="plan-import-file" accept="application/json,.json" hidden />
+      </div>
+
       <div id="alert" class="alert" role="alert" hidden></div>
 
       <div id="health" class="health" hidden></div>
@@ -77,6 +87,7 @@
             </div>
           </div>
           <div id="banner" class="banner" hidden></div>
+          <div id="explain" class="explain" hidden></div>
           <div id="timeline"></div>
         </section>
       </div>

@@ -120,9 +120,25 @@ class WorkingWindow(_Constraint):
         return v
 
 
+class SectionBudget(_Constraint):
+    # A time BUDGET for a section: the total busy minutes of every activity in that section must
+    # stay within `max_minutes`. It only bounds a SUM (not placement), so it can't shuffle the
+    # timeline — the only way it makes a plan INFEASIBLE is a cap below the section's fixed total.
+    type: Literal["section_budget"] = "section_budget"
+    section: str            # matches Activity.section
+    max_minutes: int        # cap on total busy minutes in the section
+
+    @field_validator("max_minutes")
+    @classmethod
+    def _check_max(cls, v):
+        if v <= 0:
+            raise ValueError("max_minutes must be a positive number of minutes")
+        return v
+
+
 # The discriminated union: pick the variant by its "type" field.
 Constraint = Annotated[
-    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow],
+    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow, SectionBudget],
     Field(discriminator="type"),
 ]
 

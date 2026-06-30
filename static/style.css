@@ -444,6 +444,21 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .banner { margin-top: 0.8rem; padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); font-size: 0.9rem; background: var(--surface-2); border: 1px solid var(--border); color: var(--ink); }
 .banner-bad { background: var(--bad-bg); color: var(--bad); border-color: var(--bad-border); }
 .banner-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+/* the infeasible banner carries an inline "which rules conflict?" button */
+.banner-bad { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.banner-msg { flex: 1 1 auto; }
+.banner-why { flex: 0 0 auto; }
+
+/* "why infeasible" explanation: a list of the conflicting rules, each with a Disable button */
+.explain { margin-top: 0.6rem; padding: 0.7rem 0.8rem; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--bad-border); }
+.explain-status { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--ink); }
+.explain-status:only-child { margin-bottom: 0; }
+.explain-list { display: flex; flex-direction: column; gap: 0.45rem; }
+.explain-row { display: flex; align-items: center; gap: 0.7rem; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); background: var(--surface-1); border: 1px solid var(--border); border-left: 3px solid var(--cat, var(--bad)); }
+.explain-row-txt { flex: 1 1 auto; min-width: 0; }
+.explain-row-name { font-weight: 600; font-size: 0.9rem; color: var(--ink); }
+.explain-row-meta { font-size: 0.78rem; color: var(--muted); font-family: var(--font-mono); }
+.explain-row-src { font-size: 0.8rem; color: var(--faint); font-style: italic; margin-top: 0.15rem; }
 
 .alert {
   background: var(--bad-bg);
@@ -982,6 +997,11 @@ input[type="range"]::-moz-range-thumb {
   transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
 }
 .tab-add:hover { border-color: var(--accent); color: var(--accent); }
+
+/* plan toolbar: undo/redo + save/load/duplicate, sitting under the tabs */
+.plan-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: -0.5rem 0 1.1rem; }
+.plan-actions-sep { align-self: stretch; width: 1px; background: var(--border); margin: 0.15rem 0.3rem; }
+.plan-actions .btn[disabled] { opacity: 0.4; cursor: default; }
 
 /* modal entrance keyframes */
 @keyframes modal-in {

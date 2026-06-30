@@ -12,7 +12,7 @@ from pydantic import ValidationError  # noqa: E402
 
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
-from solver import solve  # noqa: E402
+from solver import explain_infeasible, solve  # noqa: E402
 
 app = Flask(__name__)
 # Dev: don't let the browser cache static JS/CSS, so code edits show on a normal refresh
@@ -61,23 +61,37 @@ def parse_route():
                                  "Try rephrasing, or build it by hand / Load an example."}), 502
 
 
-@app.post("/solve")
-def solve_route():
-    body = request.json if request.is_json else None
+def _scenario_or_error(body):
+    """Validate a posted JSON body into a Scenario. Returns (scenario, None) on success, or
+    (None, flask_error_response) on a bad/missing body — shared by /solve and /explain."""
     if body is None:
-        return jsonify({"error": "Send a JSON scenario body."}), 400
+        return None, (jsonify({"error": "Send a JSON scenario body."}), 400)
     try:
-        scenario = Scenario.model_validate(body)
+        return Scenario.model_validate(body), None
     except ValidationError as e:
-        # The schedule was invalid (missing fields, bad HH:MM time, etc.).
-        # Turn each error into a small {location, message} pair the browser can
-        # show. We keep only these text fields because the full error also holds
-        # a raw exception that can't be turned into JSON.
+        # The schedule was invalid (missing fields, bad HH:MM time, etc.). Turn each error into a
+        # small {location, message} pair the browser can show. We keep only these text fields
+        # because the full error also holds a raw exception that can't be turned into JSON.
         details = [{"loc": ".".join(str(p) for p in err["loc"]),
                     "message": err["msg"]} for err in e.errors()]
-        return jsonify({"error": "That schedule isn't valid.",
-                        "details": details}), 400
+        return None, (jsonify({"error": "That schedule isn't valid.", "details": details}), 400)
+
+
+@app.post("/solve")
+def solve_route():
+    scenario, err = _scenario_or_error(request.json if request.is_json else None)
+    if err:
+        return err
     return jsonify(solve(scenario))
+
+
+@app.post("/explain")
+def explain_route():
+    # On-demand "why is this INFEASIBLE?": returns a minimal set of conflicting constraint ids.
+    scenario, err = _scenario_or_error(request.json if request.is_json else None)
+    if err:
+        return err
+    return jsonify(explain_infeasible(scenario))
 
 
 if __name__ == "__main__":

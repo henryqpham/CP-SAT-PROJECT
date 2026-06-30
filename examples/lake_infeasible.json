@@ -1,0 +1,18 @@
+{
+  "activities": [
+    { "id": "drive_to_lake", "duration": 90 },
+    { "id": "hamburger", "duration": 30 },
+    { "id": "sail", "duration": 120 },
+    { "id": "drive_home", "duration": 90 }
+  ],
+  "constraints": [
+    { "type": "time_window", "id": "c1", "activity": "drive_to_lake",
+      "earliest": "21:00", "enabled": true,
+      "label": "Don't leave before 9 PM", "source": "I can't leave for the lake until 9 PM" },
+    { "type": "no_overlap", "id": "c2", "activities": "all", "enabled": true,
+      "label": "One thing at a time", "source": "" },
+    { "type": "precedence", "id": "c3", "before": "drive_to_lake", "after": "sail",
+      "enabled": true, "label": "Drive to the lake before sailing",
+      "source": "have to drive there before I can sail" }
+  ]
+}

@@ -28,11 +28,14 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 **Working today (the base):**
 
 - The CP-SAT solver — schedules across a custom **horizon** (one 24h day by default, or several
-  days) + the editable JSON IR and its 5 constraint types.
+  days) + the editable JSON IR and its 7 constraint types.
 - The timeline (Gantt) — a fitted single-day view, or a multi-day view with per-day markers — plus
   the "On this plan" roster and the searchable Library (with "+ New").
 - A capacity health bar (used vs. your horizon: over / under / time left).
 - Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
+- When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
+  rules (with one-click disable). Load the **Lake day (over-constrained)** example to see it.
+- Undo/redo, plus duplicate a plan and export/import it as a JSON file (all local, no cloud).
 
 **Next, toward the MVP (not paused — the actual target):**
 
@@ -58,6 +61,8 @@ No database, no build step, no npm. One Flask app serves the dashboard (`/`) plu
 endpoints:
 
 - **`/solve`** — takes the IR and returns a schedule from CP-SAT.
+- **`/explain`** — for an INFEASIBLE plan, returns the minimal set of conflicting constraint ids
+  (deletion filtering: drop each rule and re-solve). Called on demand, not in the live solve loop.
 - **`/example[/<name>]`** — returns a hand-written demo scenario; `/examples` lists them.
 - **`/parse`** — the old sentence-to-JSON route, kept but **dormant** (AI is off for now).
 
@@ -86,7 +91,7 @@ rule, watch it react — in any order.
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
+├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
 ├── models.py            # Pydantic IR: Activity (+ section) + constraint union — the JSON contract
 ├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
@@ -121,6 +126,9 @@ call; `enabled` toggles a rule without losing its numbers. The constraint types 
   the horizon, so activities in that section can only run inside the open hours (the solver forbids
   the closed complement each day; `open >= close` wraps overnight). It's the per-day mechanism; its
   closed bands are shaded on the timeline. (Replaces the old, never-wired `scenario.day`.)
+- `section_budget` — a time **budget** for a `section`: the total busy minutes of every activity in
+  that section must stay within `max_minutes`. It bounds a sum, not placement, so it only makes a
+  plan infeasible when the cap is below the section's fixed total work.
 
 An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP) an optional
 **`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized

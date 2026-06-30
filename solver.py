@@ -93,6 +93,10 @@ def solve(scenario: Scenario) -> dict:
     ends = {}
     intervals = {}
     presence = {}  # activity_id -> presence BoolVar (only for optional activities)
+    # Each occurrence's contribution to its section's busy-minute total (used by section_budget):
+    # a constant for a fixed activity, the size var for a variable-duration one, or base*presence
+    # for an optional one (so a dropped activity contributes 0).
+    dur_terms = {}
 
     for occ in occurrences:
         oid = occ["id"]
@@ -127,6 +131,7 @@ def solve(scenario: Scenario) -> dict:
                 model.add(size == base).only_enforce_if(trigger_present)
 
             interval = model.new_interval_var(starts[oid], size, ends[oid], f"iv_{oid}")
+            dur_terms[oid] = size  # variable duration -> count the actual size var
         elif is_optional:
             present = presence.get(oid)
             if present is None:
@@ -135,10 +140,12 @@ def solve(scenario: Scenario) -> dict:
             interval = model.new_optional_interval_var(
                 starts[oid], base_duration[oid], ends[oid], present, f"iv_{oid}"
             )
+            dur_terms[oid] = base_duration[oid] * present  # 0 minutes when dropped
         else:
             interval = model.new_interval_var(
                 starts[oid], base_duration[oid], ends[oid], f"iv_{oid}"
             )
+            dur_terms[oid] = base_duration[oid]  # fixed duration -> a constant
 
         intervals[oid] = interval
 
@@ -272,6 +279,23 @@ def solve(scenario: Scenario) -> dict:
                 if before != after:
                     add_precedence(before, after)
 
+        elif c.type == "section_budget":
+            # Total busy minutes in the section must stay within the cap. Sum each member
+            # occurrence's duration term (constant / size var / base*presence) and bound it.
+            terms = [dur_terms[occ["id"]] for occ in occurrences if occ["section"] == c.section]
+            if terms:
+                total = sum(terms)
+                if isinstance(total, int):
+                    # All members are fixed-duration, so the sum is a plain number. If it already
+                    # blows the cap, force INFEASIBLE with a self-contradicting var (a plain
+                    # `model.add(total <= cap)` here would be a Python bool, which add() rejects).
+                    if total > c.max_minutes:
+                        over = model.new_bool_var(f"budget_over_{c.id}")
+                        model.add(over == 1)
+                        model.add(over == 0)
+                else:
+                    model.add(total <= c.max_minutes)
+
         # conditional: handled above when building the activity vars.
 
     solver = cp_model.CpSolver()
@@ -299,3 +323,44 @@ def solve(scenario: Scenario) -> dict:
         return {"status": "INFEASIBLE"}
 
     return {"status": "UNKNOWN"}
+
+
+def explain_infeasible(scenario: Scenario) -> dict:
+    """For an INFEASIBLE scenario, find a MINIMAL set of enabled constraints that conflict.
+
+    Uses deletion filtering: drop one enabled constraint at a time and re-solve; if the rest is
+    still infeasible the dropped rule wasn't essential to the conflict, so leave it out. What
+    survives is an irreducible conflict — turning off ANY one of those rules frees the plan. This
+    reuses solve() unchanged, so it works for EVERY constraint type (no per-type reification), at
+    the cost of O(n) solves. It's called on demand (not in the live solve loop), so that's fine.
+
+    Returns {"structural": bool, "conflict_ids": [...]}:
+      - structural=True  -> infeasible even with every rule off (the activities just don't fit the
+                            horizon, or a section is over-packed); conflict_ids is empty.
+      - conflict_ids     -> the ids of the conflicting constraints (empty if it actually solves now).
+    """
+    enabled_idx = [i for i, c in enumerate(scenario.constraints) if c.enabled]
+
+    def solve_with(active):
+        # Solve a copy where only the constraints whose index is in `active` are enabled.
+        trial = scenario.model_copy(deep=True)
+        active = set(active)
+        for i, c in enumerate(trial.constraints):
+            c.enabled = i in active
+        return solve(trial)["status"]
+
+    # Not actually infeasible (e.g. the plan changed since) -> nothing to explain.
+    if solve_with(enabled_idx) != "INFEASIBLE":
+        return {"structural": False, "conflict_ids": []}
+
+    # Still infeasible with every rule off -> the conflict isn't any rule; it's the activities vs.
+    # the horizon / section capacity.
+    if solve_with([]) == "INFEASIBLE":
+        return {"structural": True, "conflict_ids": []}
+
+    keep = list(enabled_idx)
+    for i in enabled_idx:
+        trial = [j for j in keep if j != i]
+        if solve_with(trial) == "INFEASIBLE":
+            keep = trial  # i wasn't needed for the conflict; drop it permanently
+    return {"structural": False, "conflict_ids": [scenario.constraints[i].id for i in keep]}
