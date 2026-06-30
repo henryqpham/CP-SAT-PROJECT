@@ -929,7 +929,51 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .lib-card-add { flex: 1; background: var(--accent); color: #fff; border-color: transparent; }
 .lib-card-add:hover { background: var(--accent-hover); }
 
+/* the catalog as a banded TABLE (P6-style) — replaces the card grid for the library.
+   (.lib-cards above is still used by the constraints modal.) */
+.lib-table-wrap { flex: 1; min-height: 0; overflow: auto; }
+.lib-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.lib-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  text-align: left; padding: 0.45rem 0.7rem;
+  background: var(--surface-2); color: var(--muted);
+  font-family: var(--font-mono); font-size: 0.64rem; letter-spacing: 0.05em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border-strong); white-space: nowrap;
+}
+.lib-table th.lt-dur, .lib-table td.lt-dur { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.lib-table th.lt-used, .lib-table td.lt-used { text-align: right; font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.lib-table th.lt-add { width: 1%; }
+
+/* data rows: a category-colored left edge + dot, like the old cards */
+.lt-row { --cat: var(--muted); border-bottom: 1px solid var(--border-faint); }
+.lt-row:hover { background: var(--hover); }
+.lt-row td { padding: 0.38rem 0.7rem; vertical-align: middle; }
+.lt-row .lt-name { border-left: 3px solid var(--cat); display: flex; align-items: center; gap: 0.45rem; font-weight: 600; max-width: 22rem; }
+.lt-dot { width: 0.55rem; height: 0.55rem; border-radius: 2px; background: var(--cat); flex: 0 0 auto; }
+.lt-name-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lt-cat, .lt-sec { color: var(--muted); white-space: nowrap; }
+.lt-add { white-space: nowrap; }
+.lt-add-btn { background: var(--accent); color: #fff; border-color: transparent; padding: 0.18rem 0.6rem; }
+.lt-add-btn:hover { background: var(--accent-hover); }
+.lt-add .del { margin-left: 0.35rem; vertical-align: middle; }
+
+/* group bands: a full-width colored header row; click to collapse the category */
+.lt-band { --cat: var(--muted); cursor: pointer; }
+.lt-band td { padding: 0; border-top: 1px solid var(--border); }
+.lt-band-inner {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0.7rem;
+  background: color-mix(in srgb, var(--cat) 22%, var(--surface-2));
+  border-left: 3px solid var(--cat);
+  font-weight: 700; color: var(--ink);
+}
+.lt-band:hover .lt-band-inner { background: color-mix(in srgb, var(--cat) 32%, var(--surface-2)); }
+.lt-band-caret { color: var(--muted); width: 0.8rem; flex: 0 0 auto; }
+.lt-band-count { color: var(--muted); font-weight: 500; font-family: var(--font-mono); font-size: 0.72rem; }
+.lt-band-dur { margin-left: auto; color: var(--muted); font-weight: 600; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
 /* numbered pager */
+.lib-pager:empty { display: none; }
 .lib-pager { display: flex; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.55rem; border-top: 1px solid var(--border); }
 .lib-page { font: inherit; font-size: 0.78rem; cursor: pointer; min-width: 1.9rem; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.2rem 0.5rem; }
 .lib-page:hover:not(:disabled) { color: var(--ink); background: var(--surface-3); }

@@ -94,7 +94,7 @@
       </div>
     </div>
 
-    <!-- Browse Library: a "storefront" catalog — filter rail + card grid (filled in by app.js) -->
+    <!-- Browse Library: a "storefront" catalog — filter rail + banded table (filled in by app.js) -->
     <div id="library-modal" class="modal-backdrop" hidden>
       <div class="modal modal-library" role="dialog" aria-modal="true" aria-label="Activity Library">
         <div class="modal-head">
@@ -132,13 +132,13 @@
           <div class="lib-content">
             <div class="lib-content-head">
               <span id="library-count" class="lib-count"></span>
-              <div class="lib-sort" role="group" aria-label="Sort">
-                <button type="button" class="lib-sort-btn" data-sort="name">Name</button>
-                <button type="button" class="lib-sort-btn" data-sort="duration">Dur</button>
-                <button type="button" class="lib-sort-btn" data-sort="category">Cat</button>
+              <div class="lib-sort" role="group" aria-label="Sort / group">
+                <button type="button" class="lib-sort-btn" data-sort="name" title="Flat table, sorted by name">Name</button>
+                <button type="button" class="lib-sort-btn" data-sort="duration" title="Flat table, sorted by duration">Dur</button>
+                <button type="button" class="lib-sort-btn" data-sort="category" title="Group into collapsible category bands">Group</button>
               </div>
             </div>
-            <div id="library-list" class="lib-cards"></div>
+            <div id="library-list" class="lib-table-wrap"></div>
             <div id="library-pager" class="lib-pager"></div>
           </div>
         </div>

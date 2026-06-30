@@ -938,9 +938,10 @@ let librarySearch = "";
 let librarySections = new Set();
 let libraryCategories = new Set();
 let libraryDurations = new Set(); // duration band keys: "≤15m" "15–45m" "45–90m" "90m+"
-let librarySort = "name";
-let libraryPage = 0; // 0-based page in the card grid
-const LIB_PAGE = 48; // cards per page
+let librarySort = "category"; // default to the banded, grouped-by-category table (P6-style)
+let libCollapsedCats = new Set(); // category bands the user has collapsed in the catalog table
+let libraryPage = 0; // 0-based page (constraints modal still paginates; the library table scrolls)
+const LIB_PAGE = 48;
 // User-authored templates ("+ New" in the modal), persisted in localStorage like saved plans.
 let customTemplates = [];
 const TEMPLATES_KEY = "planner.templates.v1";
@@ -1240,26 +1241,43 @@ function renderLibraryTray() {
 
 // Build one template CARD: name, category·section meta, big duration, "×N in plan" badge, "+ Add",
 // and (for user-saved templates) a "saved" tag + remove ×. Tinted by its category color.
-function libCardEl(tpl) {
-  const card = document.createElement("div");
-  card.className = "lib-card";
-  card.style.setProperty("--cat", (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)");
+// The catalog table header: Activity | Category | Section | Duration | In plan | (add).
+function libTableHead() {
+  const thead = document.createElement("thead");
+  const tr = document.createElement("tr");
+  for (const [label, cls] of [["Activity", "lt-name"], ["Category", "lt-cat"], ["Section", "lt-sec"],
+    ["Duration", "lt-dur"], ["In plan", "lt-used"], ["", "lt-add"]]) {
+    tr.append(makeEl("th", label, cls));
+  }
+  thead.append(tr);
+  return thead;
+}
+
+// One catalog ROW (the table form of the old card): a category-colored name, category, section,
+// duration, an "× N in plan" count, and the add / saved-remove actions.
+function libRowEl(tpl) {
+  const tr = document.createElement("tr");
+  tr.className = "lt-row";
+  tr.style.setProperty("--cat", (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)");
+
+  const nameTd = makeEl("td", "", "lt-name");
+  nameTd.append(makeEl("span", "", "lt-dot"));
+  nameTd.append(makeEl("span", tpl.label, "lt-name-txt"));
+  if (customTemplates.includes(tpl)) nameTd.append(makeEl("span", "saved", "lib-row-saved"));
+  tr.append(nameTd);
+
+  tr.append(makeEl("td", (TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category || "—", "lt-cat"));
+  tr.append(makeEl("td", tpl.section || "—", "lt-sec"));
+  tr.append(makeEl("td", dur(tpl.minutes), "lt-dur"));
 
   // "× N in plan": how many activities in the current plan came from this template (matched by id base).
   const base = slug(tpl.label);
   const used = scenario.activities.filter((a) => a.id === base || a.id.startsWith(base + "_")).length;
-  if (used > 0) card.append(makeEl("span", "×" + used, "lib-card-used"));
+  tr.append(makeEl("td", used > 0 ? "×" + used : "", "lt-used"));
 
-  card.append(makeEl("div", tpl.label, "lib-card-name"));
-  const meta = [(TYPES[tpl.category] && TYPES[tpl.category].label) || tpl.category, tpl.section].filter(Boolean);
-  if (meta.length) card.append(makeEl("div", meta.join(" · "), "lib-card-meta"));
-  card.append(makeEl("div", dur(tpl.minutes), "lib-card-dur"));
-
-  const foot = makeEl("div", "", "lib-card-foot");
-  const add = document.createElement("button");
+  const actTd = makeEl("td", "", "lt-add");
+  const add = makeEl("button", "+ Add", "btn btn-sm lt-add-btn");
   add.type = "button";
-  add.className = "btn btn-sm lib-card-add";
-  add.textContent = "+ Add";
   add.onclick = () => {
     scenario.activities.push({
       id: uniqueActivityId(slug(tpl.label)),
@@ -1271,10 +1289,9 @@ function libCardEl(tpl) {
     render(); // roster + (debounced) timeline update; modal stays open
     renderLibraryList(); // refresh the "in plan" counts
   };
-  foot.append(add);
-  // User-saved templates get a "saved" tag + a × to remove; seed (library.json) cards don't.
+  actTd.append(add);
+  // User-saved templates get a × to remove; seed (library.json) rows don't.
   if (customTemplates.includes(tpl)) {
-    foot.append(makeEl("span", "saved", "lib-row-saved"));
     const rm = deleteBtn(() => {
       const i = customTemplates.indexOf(tpl);
       if (i > -1) customTemplates.splice(i, 1);
@@ -1282,14 +1299,42 @@ function libCardEl(tpl) {
       renderLibraryList();
     });
     rm.title = "Remove saved template";
-    foot.append(rm);
+    actTd.append(rm);
   }
-  card.append(foot);
-  return card;
+  tr.append(actTd);
+  return tr;
 }
 
-// Refresh the whole modal: rail facets + active pills + sort state, then draw the current PAGE of
-// filtered/sorted templates as a card grid, plus the "Showing N of M" count and the numbered pager.
+// A P6-style group band: a full-width colored header for one category, with a caret, its name, the
+// activity count, and their total duration. Click (or Enter/Space) to collapse/expand the group.
+function libBandRow(cat, items) {
+  const tr = document.createElement("tr");
+  tr.className = "lt-band";
+  tr.style.setProperty("--cat", (TYPES[cat] && TYPES[cat].color) || "var(--muted)");
+  const open = !libCollapsedCats.has(cat);
+  const total = items.reduce((s, t) => s + (t.minutes || 0), 0);
+
+  const td = document.createElement("td");
+  td.colSpan = 6;
+  const inner = makeEl("div", "", "lt-band-inner");
+  inner.append(makeEl("span", open ? "▾" : "▸", "lt-band-caret"));
+  inner.append(makeEl("span", (TYPES[cat] && TYPES[cat].label) || cat || "Uncategorized", "lt-band-name"));
+  inner.append(makeEl("span", String(items.length), "lt-band-count"));
+  inner.append(makeEl("span", dur(total), "lt-band-dur"));
+  td.append(inner);
+  tr.append(td);
+
+  onActivate(tr, () => {
+    if (libCollapsedCats.has(cat)) libCollapsedCats.delete(cat);
+    else libCollapsedCats.add(cat);
+    renderLibraryList();
+  });
+  return tr;
+}
+
+// Refresh the whole modal: rail facets + active pills + sort state, then draw the filtered/sorted
+// templates as a TABLE. Sort = "category" groups the rows into collapsible P6-style colored bands;
+// "name"/"duration" is a flat sorted table. The table scrolls, so there's no pager.
 function renderLibraryList() {
   rebuildLibraryFilter();
   renderLibraryPills();
@@ -1313,18 +1358,29 @@ function renderLibraryList() {
     box.append(makeEl("p", "No activities match these filters. Try clearing one.", "hint"));
     return;
   }
+  if (count) count.textContent = `Showing ${rows.length} of ${allTemplates().length}`;
 
-  // Clamp the page in case a filter shrank the result set, then slice out this page.
-  const pageCount = Math.ceil(rows.length / LIB_PAGE);
-  if (libraryPage >= pageCount) libraryPage = pageCount - 1;
-  if (libraryPage < 0) libraryPage = 0;
-  const pageRows = rows.slice(libraryPage * LIB_PAGE, libraryPage * LIB_PAGE + LIB_PAGE);
-
-  if (count) count.textContent = `Showing ${pageRows.length} of ${rows.length}`;
-  const frag = document.createDocumentFragment();
-  for (const tpl of pageRows) frag.append(libCardEl(tpl));
-  box.append(frag);
-  renderLibraryPager(pageCount);
+  const table = document.createElement("table");
+  table.className = "lib-table";
+  table.append(libTableHead());
+  const tbody = document.createElement("tbody");
+  if (librarySort === "category") {
+    // Group rows into category bands, preserving the sorted order (category, then name).
+    const groups = new Map();
+    for (const tpl of rows) {
+      const key = tpl.category || "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(tpl);
+    }
+    for (const [cat, items] of groups) {
+      tbody.append(libBandRow(cat, items));
+      if (!libCollapsedCats.has(cat)) for (const tpl of items) tbody.append(libRowEl(tpl));
+    }
+  } else {
+    for (const tpl of rows) tbody.append(libRowEl(tpl));
+  }
+  table.append(tbody);
+  box.append(table);
 }
 
 // Apply the search text + the three facet sets, then sort. AND across facet groups, OR within one.
