@@ -29,12 +29,12 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 
 - The CP-SAT solver — schedules across a custom **horizon** (one 24h day by default, or several
   days) + the editable JSON IR and its 7 constraint types.
-- The timeline (Gantt) — crew/section **swimlanes**, lane-packed (non-overlapping tasks share a
-  row), **colored by activity kind** (sleep/meal/exercise/EVA/comms/ops) with a legend, clean labels
-  with full detail on hover, night/comms shading, and a draggable mission-elapsed cursor. A
-  **Group-by: Crew | Section** toggle flips the lanes (no re-solve); a no-crew plan degrades to
-  section lanes. Fitted single-day or multi-day (per-day markers). Plus the "On this plan" roster and
-  the searchable Library (with "+ New").
+- The timeline (Gantt) — **swimlanes**, lane-packed (non-overlapping tasks share a row), **colored by
+  activity kind** (sleep/meal/exercise/EVA/comms/ops) with a legend, clean labels with full detail on
+  hover, night/comms shading, and a draggable mission-elapsed cursor. A **Group by** picker re-lanes
+  the timeline by any real field — **Section · Type · Assignee** (the owner/worker/crew you set per
+  activity) — no re-solve. Fitted single-day or multi-day (per-day markers). Plus the "On this plan"
+  roster and the searchable Library (with "+ New").
 - A capacity health bar (used vs. your horizon: over / under / time left).
 - Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
 - When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
@@ -96,7 +96,7 @@ rule, watch it react — in any order.
 ```
 CP-SAT-PROJECT/
 ├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
-├── models.py            # Pydantic IR: Activity (+ section) + constraint union — the JSON contract
+├── models.py            # Pydantic IR: Activity (+ section, + display-only assignee/type) + constraint union — the JSON contract
 ├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
 ├── examples/lake.json   # hand-written IR to test /solve without any AI
@@ -141,6 +141,11 @@ An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP)
 **`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized
 (they can't overlap), which is what makes the what-if real: drop a second task into a busy section
 and watch the timeline stretch or go red.
+
+It can also carry an optional **`assignee`** — free text for the owner of the work (a worker, a
+friend, a crew member). It's **display-only** (the solver ignores it); the timeline's **Group by**
+picker can lane the schedule by it, so the same swimlane view works for any domain without baking in
+"crew". You set it per activity in the Inspector (with autocomplete from values already in the plan).
 
 An activity can also set **`recurs_daily: true`** (with an optional **`daily_window`** `{open, close}`
 and a `days` filter): the solver then *expands* it into **one occurrence per day** across the horizon,

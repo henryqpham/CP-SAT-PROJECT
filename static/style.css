@@ -431,6 +431,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   margin: 0;
 }
 .result-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* timeline "Group by" picker (Section / Type / Assignee) */
+.group-by { display: inline-flex; align-items: center; gap: 0.35rem; }
+.group-by-lbl { font-size: 0.76rem; color: var(--muted); white-space: nowrap; }
+.group-by .select-sm { width: auto; padding: 0.25rem 1.4rem 0.25rem 0.45rem; font-size: 0.78rem; }
 
 /* legend: which color (and icon) means which activity kind; trailing note states the lane axis */
 .legend { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--muted); }

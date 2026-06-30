@@ -41,6 +41,12 @@ class Activity(BaseModel):
     id: str
     duration: int  # minutes
     section: Optional[str] = None  # free-text group; same section = one at a time
+    # Free-text owner/group label (a worker, a friend, a crew member…). DISPLAY-ONLY: the solver
+    # ignores it; the dashboard can group the timeline swimlanes by it. You fill it in per activity.
+    assignee: Optional[str] = None
+    # Activity category/type (e.g. "Prep", "Cleaning"). DISPLAY-ONLY like assignee: the solver ignores
+    # it; the dashboard uses it for the bar color and as a Group-by option. Set from the Library or Inspector.
+    type: Optional[str] = None
     # Recurrence: when true the solver EXPANDS this into one occurrence per day across the horizon,
     # each clamped to its day (and to `daily_window` if set), so e.g. "lunch" lands once on every
     # mission day with no precedence wiring. `days` limits which 0-based days it recurs on.

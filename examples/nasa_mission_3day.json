@@ -2,6 +2,7 @@
   "activities": [
     {
       "id": "post_sleep_A_1",
+      "assignee": "Crew A",
       "duration": 60
     },
     {
@@ -45,6 +46,7 @@
     },
     {
       "id": "exercise_A",
+      "assignee": "Crew A",
       "duration": 120,
       "section": "Exercise A",
       "recurs_daily": true,
@@ -52,6 +54,7 @@
     },
     {
       "id": "exercise_B",
+      "assignee": "Crew B",
       "duration": 120,
       "section": "Exercise B",
       "recurs_daily": true,
@@ -60,6 +63,7 @@
     },
     {
       "id": "exercise_C",
+      "assignee": "Crew C",
       "duration": 120,
       "section": "Exercise C",
       "recurs_daily": true,
@@ -68,6 +72,7 @@
     },
     {
       "id": "exercise_D",
+      "assignee": "Crew D",
       "duration": 120,
       "section": "Exercise D",
       "recurs_daily": true,
@@ -75,84 +80,101 @@
     },
     {
       "id": "orion_dpc_A",
+      "assignee": "Crew A",
       "duration": 30,
       "section": "Orion"
     },
     {
       "id": "orion_sys_check_A",
+      "assignee": "Crew A",
       "duration": 45,
       "section": "Orion"
     },
     {
       "id": "orion_gnc_cal_A",
+      "assignee": "Crew A",
       "duration": 40,
       "section": "Orion"
     },
     {
       "id": "orion_burn_A",
+      "assignee": "Crew A",
       "duration": 60,
       "section": "Orion"
     },
     {
       "id": "orion_rcs_B_1",
+      "assignee": "Crew B",
       "duration": 30,
       "section": "Orion"
     },
     {
       "id": "pre_sleep_A_1",
+      "assignee": "Crew A",
       "duration": 60
     },
     {
       "id": "sleep_A_1",
+      "assignee": "Crew A",
       "duration": 480,
       "section": "Rest A"
     },
     {
       "id": "sleep_B_1",
+      "assignee": "Crew B",
       "duration": 480,
       "section": "Rest B"
     },
     {
       "id": "sleep_C_1",
+      "assignee": "Crew C",
       "duration": 480,
       "section": "Rest C"
     },
     {
       "id": "sleep_D_1",
+      "assignee": "Crew D",
       "duration": 480,
       "section": "Rest D"
     },
     {
       "id": "post_sleep_A_2",
+      "assignee": "Crew A",
       "duration": 60
     },
     {
       "id": "orion_dpc_B",
+      "assignee": "Crew B",
       "duration": 30,
       "section": "Orion"
     },
     {
       "id": "hls_dock_B",
+      "assignee": "Crew B",
       "duration": 90,
       "section": "HLS"
     },
     {
       "id": "hls_ingress_C",
+      "assignee": "Crew C",
       "duration": 60,
       "section": "HLS"
     },
     {
       "id": "hls_transfer_D",
+      "assignee": "Crew D",
       "duration": 75,
       "section": "HLS"
     },
     {
       "id": "hls_descent_prep_D",
+      "assignee": "Crew D",
       "duration": 60,
       "section": "HLS"
     },
     {
       "id": "eva_suit_prep_C",
+      "assignee": "Crew C",
       "duration": 90,
       "section": "xEVA"
     },
@@ -163,35 +185,42 @@
     },
     {
       "id": "orion_stow_B",
+      "assignee": "Crew B",
       "duration": 45,
       "section": "Orion"
     },
     {
       "id": "pre_sleep_A_2",
+      "assignee": "Crew A",
       "duration": 60
     },
     {
       "id": "sleep_A_2",
+      "assignee": "Crew A",
       "duration": 480,
       "section": "Rest A"
     },
     {
       "id": "sleep_B_2",
+      "assignee": "Crew B",
       "duration": 480,
       "section": "Rest B"
     },
     {
       "id": "sleep_C_2",
+      "assignee": "Crew C",
       "duration": 480,
       "section": "Rest C"
     },
     {
       "id": "sleep_D_2",
+      "assignee": "Crew D",
       "duration": 480,
       "section": "Rest D"
     },
     {
       "id": "post_sleep_A_3",
+      "assignee": "Crew A",
       "duration": 60
     },
     {
@@ -201,16 +230,19 @@
     },
     {
       "id": "eva_don_C",
+      "assignee": "Crew C",
       "duration": 60,
       "section": "xEVA"
     },
     {
       "id": "eva_prebreathe_C",
+      "assignee": "Crew C",
       "duration": 30,
       "section": "xEVA"
     },
     {
       "id": "eva_egress_C",
+      "assignee": "Crew C",
       "duration": 30,
       "section": "xEVA"
     },
@@ -221,31 +253,37 @@
     },
     {
       "id": "eva_tasks_C",
+      "assignee": "Crew C",
       "duration": 240,
       "section": "xEVA"
     },
     {
       "id": "eva_ingress_C",
+      "assignee": "Crew C",
       "duration": 30,
       "section": "xEVA"
     },
     {
       "id": "eva_doff_C",
+      "assignee": "Crew C",
       "duration": 45,
       "section": "xEVA"
     },
     {
       "id": "hls_ascent_prep_D",
+      "assignee": "Crew D",
       "duration": 45,
       "section": "HLS"
     },
     {
       "id": "orion_rcs_B_2",
+      "assignee": "Crew B",
       "duration": 30,
       "section": "Orion"
     },
     {
       "id": "hls_undock_D",
+      "assignee": "Crew D",
       "duration": 45,
       "section": "HLS"
     }

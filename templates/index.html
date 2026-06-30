@@ -82,7 +82,14 @@
                 </label>
                 <button type="button" id="zoom-reset" class="btn btn-ghost btn-sm" title="Reset zoom to fit">Fit</button>
               </div>
-              <button type="button" id="group-toggle" class="btn btn-ghost btn-sm" aria-label="Group timeline by section (click to switch)">Group: Section</button>
+              <label class="group-by" title="Group the timeline lanes by a field">
+                <span class="group-by-lbl">Group by</span>
+                <select id="group-select" class="select select-sm" aria-label="Group timeline lanes by">
+                  <option value="section">Section</option>
+                  <option value="type">Type</option>
+                  <option value="assignee">Assignee</option>
+                </select>
+              </label>
               <button type="button" id="view-toggle" class="btn btn-ghost btn-sm">Overview</button>
               <span id="status" class="pill" aria-live="polite"></span>
             </div>

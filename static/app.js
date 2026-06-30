@@ -15,9 +15,8 @@ let resultSeq = 0;
 let selectedId = null;
 // Timeline view: false = Lanes (per-section), true = Overview (lanes collapsed to summary bars).
 let overview = false;
-// Timeline grouping: "section" groups everything by section (the general default — works on any
-// plan, blank canvas included); "crew" puts each crew member in a swimlane (a no-crew plan degrades
-// back to sections). Presentation only — flipping it redraws, never re-solves.
+// Timeline grouping field: "section" (default), "type", or "assignee" — each reads a real field on
+// the activity (nothing derived from id naming). Presentation only — changing it redraws, never re-solves.
 let groupMode = "section";
 // Mission-elapsed cursor position, in absolute minutes. A planned plan has no live "now", so this is
 // a draggable marker the user parks at a moment of interest. null = sit at the plan's start.
@@ -83,26 +82,20 @@ function kindOf(item) {
   return "ops";
 }
 
-// crewOf(item) -> "A".."D" or null. A "Rest A" / "Exercise B" section names the crew directly;
-// otherwise an UPPERCASE _A.._D in the id does (uppercase only, so meal_b/l/d isn't read as crew).
-function crewOf(item) {
+// laneOf(item, mode) -> the swimlane this item belongs in, for the chosen group-by field:
+//   "assignee" -> the activity's assignee (a worker/friend/crew you typed), else "Unassigned"
+//   "type"     -> the activity's type/category label, else "Untyped"
+//   "section"  -> the section (default), else "Shared"
+// Every dimension reads a real field on the activity — nothing is derived from id naming.
+function laneOf(item, mode) {
   const a = findActivity(item.id);
-  const sec = (a && a.section && a.section.trim()) || "";
-  const fromSec = /^(?:Rest|Exercise) ([A-D])$/.exec(sec);
-  if (fromSec) return fromSec[1];
-  const fromId = /_([A-D])(?:_|#|$)/.exec(String(item.id));
-  return fromId ? fromId[1] : null;
-}
-
-// laneOf(item, groupMode) -> the swimlane this item belongs in. In "crew" mode a derivable crew wins
-// ("Crew A".."Crew D"); otherwise (and always in "section" mode) the section is the lane, falling back
-// to "Shared". A no-crew plan (e.g. grocery) therefore degrades to section lanes on the same path.
-function laneOf(item, groupMode) {
-  if (groupMode === "crew") {
-    const c = crewOf(item);
-    if (c) return "Crew " + c;
+  if (mode === "assignee") {
+    const who = a && a.assignee && a.assignee.trim();
+    return who || "Unassigned";
+  } else if (mode === "type") {
+    const t = a && a.type && a.type.trim();
+    return (t && ((TYPES[t] && TYPES[t].label) || t)) || "Untyped";
   }
-  const a = findActivity(item.id);
   const sec = (a && a.section && a.section.trim()) || "";
   return sec || "Shared";
 }
@@ -145,7 +138,7 @@ $("parse-btn").onclick = () =>
 
 $("solve-btn").onclick = () => solveNow();
 $("view-toggle").onclick = () => setView(!overview);
-$("group-toggle").onclick = () => setGroupMode(groupMode === "crew" ? "section" : "crew");
+$("group-select").onchange = (e) => setGroupMode(e.target.value);
 
 // Undo / redo + plan file actions (save / load / duplicate). State/presentation only — the solver
 // still runs on the live plan; these just move snapshots around.
@@ -1482,6 +1475,10 @@ function renderInspector() {
   );
   box.append(selectField("type", act.type || "", typeOpts, (v) => (act.type = v || null)));
 
+  // assignee: a free-text owner you set (worker / friend / crew). Display-only — the timeline can
+  // group lanes by it (Group by: Assignee). Autocompletes from assignees already used in the plan.
+  box.append(assigneeField("assignee", act.assignee || "", assigneeValues(), (v) => (act.assignee = v.trim() || null)));
+
   // Optional read-only solved start–end from the schedule currently drawn.
   const solved = shownSchedule && shownSchedule.find((s) => sourceId(s.id) === act.id);
   if (solved) box.append(makeEl("div", `Scheduled ${timeLabel(solved.start)}–${timeLabel(solved.end)}`, "insp-solved"));
@@ -2017,11 +2014,11 @@ function showGanttTip(bar, e) {
   const id = bar.dataset.id;
   const a = findActivity(id);
   const sec = (a && a.section && a.section.trim()) || "—";
-  const crew = crewOf({ id });
+  const who = a && a.assignee && a.assignee.trim();
   ganttTip.innerHTML = "";
   ganttTip.append(makeEl("div", prettify(id), "tip-name"));
   ganttTip.append(makeEl("div", timeLabel(+bar.dataset.start) + "–" + timeLabel(+bar.dataset.end), "tip-time"));
-  ganttTip.append(makeEl("div", crew ? "Crew " + crew + " · " + sec : sec, "tip-where"));
+  ganttTip.append(makeEl("div", who ? who + " · " + sec : sec, "tip-where"));
   ganttTip.append(makeEl("div", id, "tip-id"));
   ganttTip.hidden = false;
   // Place near the cursor, flipping to the other side near the viewport edges.
@@ -2072,7 +2069,7 @@ function buildLegend() {
     item.append(makeEl("span", def.label || k));
     leg.append(item);
   }
-  leg.append(makeEl("span", "lane = " + (groupMode === "section" ? "section" : "crew"), "legend-note"));
+  leg.append(makeEl("span", "lane = " + groupMode, "legend-note"));
   return leg;
 }
 
@@ -2091,16 +2088,13 @@ function setView(isOverview) {
   drawTimeline(shownSchedule, shownStale);
 }
 
-// Group-by: "crew" swimlanes (default) vs "section" swimlanes. Presentation only — redraw, no re-solve.
-// Lane names differ between modes, so re-derive the collapsed set if Overview is active.
+// Group-by: bucket the lanes by "section" (default), "type", or "assignee". Presentation only —
+// redraw, no re-solve. Lane names differ between modes, so re-derive the collapsed set if Overview is on.
 function setGroupMode(mode) {
-  groupMode = mode === "section" ? "section" : "crew";
-  const btn = $("group-toggle");
-  if (btn) {
-    btn.textContent = groupMode === "crew" ? "Group: Crew" : "Group: Section";
-    btn.setAttribute("aria-label", "Group timeline by " + groupMode + " (click to switch)");
-  }
-  collapsed.clear();
+  groupMode = ["section", "type", "assignee"].includes(mode) ? mode : "section";
+  const sel = $("group-select");
+  if (sel && sel.value !== groupMode) sel.value = groupMode;
+  collapsed.clear(); // lane names differ per grouping — re-derive the Overview-collapsed set
   if (overview) for (const name of currentLaneNames()) collapsed.add(name);
   drawTimeline(shownSchedule, shownStale);
 }
@@ -2335,8 +2329,8 @@ function buildGanttMulti(schedule) {
   return g;
 }
 
-// Group the schedule into swimlanes by the current groupMode, in a stable order: Crew A–D first,
-// then other lanes alphabetically, with "Shared" last. Returns a Map(laneName -> items).
+// Group the schedule into swimlanes by the current groupMode, in a stable order: lanes alphabetical,
+// with the catch-all buckets ("Shared"/"Untyped"/"Unassigned") last. Returns a Map(laneName -> items).
 function laneGroups(schedule) {
   const groups = new Map();
   for (const item of schedule) {
@@ -2349,11 +2343,9 @@ function laneGroups(schedule) {
   return ordered;
 }
 function orderLanes(names) {
-  const crew = [], rest = [];
-  for (const n of names) (/^Crew [A-D]$/.test(n) ? crew : rest).push(n);
-  crew.sort();
-  rest.sort((a, b) => (a === "Shared") - (b === "Shared") || a.localeCompare(b)); // Shared last
-  return [...crew, ...rest];
+  // Alphabetical, with the catch-all buckets pushed to the end. No special-casing of any value.
+  const tail = (n) => n === "Shared" || n === "Untyped" || n === "Unassigned";
+  return [...names].sort((a, b) => tail(a) - tail(b) || a.localeCompare(b));
 }
 
 // Greedy first-fit packing: returns sub-lanes (arrays of items) where no two items in a sub-lane
@@ -2628,6 +2620,36 @@ function numField(label, value, onChange) {
 }
 function textField(label, value, onChange) {
   return field(label, value, "text", onChange);
+}
+// Distinct assignee values already used in the plan, for the Inspector's autocomplete (so you reuse
+// "Alice" instead of retyping it, which keeps lanes from fragmenting on typos).
+function assigneeValues() {
+  return [...new Set(scenario.activities.map((a) => a.assignee && a.assignee.trim()).filter(Boolean))].sort();
+}
+// A free-text field with a <datalist> of suggestions. Display-only, so on edit we persist + REDRAW
+// the timeline (regroup) without re-solving — assignee never affects the schedule.
+function assigneeField(label, value, suggestions, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  wrap.append(makeEl("span", label, "field-lbl"));
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.value = value;
+  inp.placeholder = "e.g. Alice / Worker 1 / Crew A";
+  if (suggestions.length) {
+    const dl = document.createElement("datalist");
+    dl.id = "assignee-suggestions";
+    for (const s of suggestions) { const o = document.createElement("option"); o.value = s; dl.append(o); }
+    wrap.append(dl);
+    inp.setAttribute("list", dl.id);
+  }
+  inp.oninput = () => {
+    onChange(inp.value);
+    saveTabs();                               // persist like other plan edits
+    drawTimeline(shownSchedule, shownStale);  // regroup if grouped by assignee — no re-solve needed
+  };
+  wrap.append(inp);
+  return wrap;
 }
 function activitySelect(label, value, onChange) {
   const wrap = document.createElement("label");
