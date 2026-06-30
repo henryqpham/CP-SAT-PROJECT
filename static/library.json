@@ -1,4 +1,27 @@
 {
   "types": {},
-  "templates": []
+  "templates": [],
+  "kinds": {
+    "sleep":    { "label": "Sleep",    "icon": "🛏", "match": ["sleep", "rest", "nap"] },
+    "meal":     { "label": "Meal",     "icon": "🍴", "match": ["meal", "lunch", "breakfast", "dinner", "snack", "eat"] },
+    "exercise": { "label": "Exercise", "icon": "🏃", "match": ["exercise", "workout", "ergo", "treadmill", "ared"] },
+    "eva":      { "label": "EVA",      "icon": "🚶", "match": ["eva", "spacewalk", "egress", "ingress"] },
+    "comms":    { "label": "Comms",    "icon": "🛰", "match": ["comms", "downlink", "uplink", "aos", "pass", "pao", "tag"] },
+    "ops":      { "label": "Ops",      "icon": "⚙", "match": ["ops", "orion", "hls", "maint", "systems", "burn", "dock", "stow", "prep"] }
+  },
+  "abbrev": {
+    "am": "(AM)",
+    "pm": "(PM)",
+    "dpc": "Daily Planning Conf",
+    "pao": "PAO",
+    "gnc": "GNC",
+    "rcs": "RCS",
+    "eva": "EVA",
+    "hls": "HLS",
+    "pt": "PT",
+    "aos": "AOS",
+    "los": "LOS",
+    "iv": "IV",
+    "ev": "EV"
+  }
 }

@@ -79,7 +79,7 @@ def _scenario_or_error(body):
 
 @app.post("/solve")
 def solve_route():
-    scenario, err = _scenario_or_error(request.json if request.is_json else None)
+    scenario, err = _scenario_or_error(request.get_json(silent=True))
     if err:
         return err
     return jsonify(solve(scenario))
@@ -88,7 +88,7 @@ def solve_route():
 @app.post("/explain")
 def explain_route():
     # On-demand "why is this INFEASIBLE?": returns a minimal set of conflicting constraint ids.
-    scenario, err = _scenario_or_error(request.json if request.is_json else None)
+    scenario, err = _scenario_or_error(request.get_json(silent=True))
     if err:
         return err
     return jsonify(explain_infeasible(scenario))

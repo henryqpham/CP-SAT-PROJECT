@@ -29,8 +29,12 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 
 - The CP-SAT solver — schedules across a custom **horizon** (one 24h day by default, or several
   days) + the editable JSON IR and its 7 constraint types.
-- The timeline (Gantt) — a fitted single-day view, or a multi-day view with per-day markers — plus
-  the "On this plan" roster and the searchable Library (with "+ New").
+- The timeline (Gantt) — crew/section **swimlanes**, lane-packed (non-overlapping tasks share a
+  row), **colored by activity kind** (sleep/meal/exercise/EVA/comms/ops) with a legend, clean labels
+  with full detail on hover, night/comms shading, and a draggable mission-elapsed cursor. A
+  **Group-by: Crew | Section** toggle flips the lanes (no re-solve); a no-crew plan degrades to
+  section lanes. Fitted single-day or multi-day (per-day markers). Plus the "On this plan" roster and
+  the searchable Library (with "+ New").
 - A capacity health bar (used vs. your horizon: over / under / time left).
 - Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
 - When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
@@ -96,9 +100,12 @@ CP-SAT-PROJECT/
 ├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
 ├── examples/lake.json   # hand-written IR to test /solve without any AI
+├── examples/lake_infeasible.json  # deliberately INFEASIBLE demo for the why-infeasible explainer
+├── examples/manifest.json # titles/descriptions for the example dropdown (served by /examples)
 ├── templates/index.html
 ├── static/app.js        # the grid + live timeline; edits auto-solve via /solve
-├── static/style.css     # dark "mission control" theme (tokens at :root drive the whole look)
+├── static/library.json  # runtime data: activity templates + type colors + the timeline's activity-kind palette (icons + id→kind match) + label abbreviations (no content baked into the JS)
+├── static/style.css     # dark "mission control" theme (tokens at :root drive the whole look; --kind-* = the activity-kind bar palette)
 ├── static/artemis-logo.png  # topbar logo
 ├── static/earthrise.jpg     # darkened background photo behind the app
 ├── requirements.txt

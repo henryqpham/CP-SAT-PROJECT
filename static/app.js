@@ -8,10 +8,20 @@ const collapsed = new Set();
 // The schedule currently drawn, so we can redraw (e.g. when a section is toggled) without re-solving.
 let shownSchedule = null;
 let shownStale = false;
+// Bumped on every solve result; lets the async "why infeasible" explainer bail if a newer solve
+// landed while it was awaiting /explain (so a stale explanation never renders over a changed plan).
+let resultSeq = 0;
 // The id of the activity the user clicked in the timeline. The Inspector panel edits this one.
 let selectedId = null;
 // Timeline view: false = Lanes (per-section), true = Overview (lanes collapsed to summary bars).
 let overview = false;
+// Timeline grouping: "section" groups everything by section (the general default — works on any
+// plan, blank canvas included); "crew" puts each crew member in a swimlane (a no-crew plan degrades
+// back to sections). Presentation only — flipping it redraws, never re-solves.
+let groupMode = "section";
+// Mission-elapsed cursor position, in absolute minutes. A planned plan has no live "now", so this is
+// a draggable marker the user parks at a moment of interest. null = sit at the plan's start.
+let cursorMin = null;
 // Timeline zoom (presentation only — never re-solves). X = time-axis width multiple (1 = fit the
 // panel; higher widens the chart and the canvas scrolls). Y = row-height multiple.
 let zoomX = 1;
@@ -53,6 +63,73 @@ const colorFor = (id) => {
   return "var(--bar)";
 };
 
+// ---- timeline derivations: crew / kind / lane / label --------------------
+// All four are DISPLAY-only — they read the id, section, and type already in the data; they never
+// change the scenario or the solve. The kind map (icon + match tokens) and the abbreviation map
+// live in library.json (KINDS / ABBREV), not here, so adding a kind is a data edit, not a JS edit.
+let KINDS = {};   // kind key -> { label, icon, match:[tokens] }; color comes from CSS var --kind-<key>
+let ABBREV = {};  // lower-case id token -> pretty replacement (e.g. "dpc" -> "Daily Planning Conf")
+
+// kindOf(item) -> "sleep|meal|exercise|eva|comms|ops" (default "ops"). The activity's type wins if
+// it names a kind; otherwise the id's tokens decide. We scan tokens LEFT-TO-RIGHT and take the first
+// kind any token matches, so a leading namespace wins: "comms_eva_conf" reads as comms, not eva.
+function kindOf(item) {
+  const a = findActivity(item.id);
+  const tokens = [(a && a.type) || "", ...sourceId(item.id).split("_")]
+    .map((t) => t.toLowerCase()).filter(Boolean);
+  for (const tok of tokens) {
+    for (const key in KINDS) if ((KINDS[key].match || []).includes(tok)) return key;
+  }
+  return "ops";
+}
+
+// crewOf(item) -> "A".."D" or null. A "Rest A" / "Exercise B" section names the crew directly;
+// otherwise an UPPERCASE _A.._D in the id does (uppercase only, so meal_b/l/d isn't read as crew).
+function crewOf(item) {
+  const a = findActivity(item.id);
+  const sec = (a && a.section && a.section.trim()) || "";
+  const fromSec = /^(?:Rest|Exercise) ([A-D])$/.exec(sec);
+  if (fromSec) return fromSec[1];
+  const fromId = /_([A-D])(?:_|#|$)/.exec(String(item.id));
+  return fromId ? fromId[1] : null;
+}
+
+// laneOf(item, groupMode) -> the swimlane this item belongs in. In "crew" mode a derivable crew wins
+// ("Crew A".."Crew D"); otherwise (and always in "section" mode) the section is the lane, falling back
+// to "Shared". A no-crew plan (e.g. grocery) therefore degrades to section lanes on the same path.
+function laneOf(item, groupMode) {
+  if (groupMode === "crew") {
+    const c = crewOf(item);
+    if (c) return "Crew " + c;
+  }
+  const a = findActivity(item.id);
+  const sec = (a && a.section && a.section.trim()) || "";
+  return sec || "Shared";
+}
+
+const titleCase = (s) => (s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s);
+
+// prettify(id) -> a clean human label: drop the #dN occurrence, drop the crew letter (shown by the
+// lane) and a trailing day-number, expand known acronyms, Title-Case the rest.
+// e.g. "comms_pass_am#d1" -> "Comms Pass (AM)", "sleep_A_1" -> "Sleep", "orion_rcs_B_1" -> "Orion RCS".
+function prettify(id) {
+  let tokens = sourceId(id).split("_").filter((t) => !/^[A-D]$/.test(t)); // drop a lone crew letter
+  if (tokens.length > 1 && /^\d+$/.test(tokens[tokens.length - 1])) tokens.pop(); // drop trailing day #
+  const out = tokens.map((t) => ABBREV[t.toLowerCase()] || titleCase(t)).join(" ").trim();
+  return out || sourceId(id);
+}
+
+// The bar's icon for its kind (from library.json), used when a bar is too narrow for text.
+const iconFor = (item) => (KINDS[kindOf(item)] || {}).icon || "";
+
+// The bar's fill: an explicit user type-color wins (custom styling); otherwise the kind hue from the
+// CSS palette (--kind-sleep/meal/…). No color literals here — the value is a CSS var name.
+function barColor(item) {
+  const a = findActivity(item.id);
+  if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
+  return `var(--kind-${kindOf(item)})`;
+}
+
 // ---- wiring -------------------------------------------------------------
 addConstraintType("sequence", "Sequence (ordered)");
 addConstraintType("working_window", "Working window (open hours)");
@@ -68,6 +145,7 @@ $("parse-btn").onclick = () =>
 
 $("solve-btn").onclick = () => solveNow();
 $("view-toggle").onclick = () => setView(!overview);
+$("group-toggle").onclick = () => setGroupMode(groupMode === "crew" ? "section" : "crew");
 
 // Undo / redo + plan file actions (save / load / duplicate). State/presentation only — the solver
 // still runs on the live plan; these just move snapshots around.
@@ -108,6 +186,7 @@ $("example-select").onchange = async (e) => {
   try {
     scenario = await getJSON(`/example/${name}`);
     selectedId = null;
+    lastFeasibleSchedule = null; // a fresh plan must not show the previous plan's dimmed timeline
     resetRosterFilter();
     saveTabs(); // load the example into the active plan
     render();
@@ -359,6 +438,7 @@ $("sentence").addEventListener("keydown", (e) => {
     saveTabs();
   }
   resetHistory(); // baseline the undo history for the plan we just loaded
+  wireGanttTooltip(); // one delegated timeline tooltip, wired once
   renderTabs();
   render();
 })();
@@ -485,6 +565,10 @@ function resetHistory() {
   histUndo = [];
   histRedo = [];
   histPresent = JSON.stringify(scenario);
+  // resetHistory only runs when the whole plan is replaced (load / switch / new / delete /
+  // duplicate / import), so the previous plan's last-good schedule no longer applies — forget it
+  // or an INFEASIBLE new plan would draw the OLD plan's bars dimmed.
+  lastFeasibleSchedule = null;
   updateHistoryButtons();
 }
 function undo() {
@@ -505,6 +589,7 @@ function redo() {
 function applyHistory() {
   scenario = JSON.parse(histPresent);
   selectedId = null;
+  lastFeasibleSchedule = null; // undo/redo swaps the whole plan; don't keep the other state's bars
   resetRosterFilter();
   saveTabs();
   renderTabs();
@@ -867,8 +952,10 @@ async function loadLibrary() {
     const data = await getJSON("/static/library.json");
     LIBRARY = data.templates || [];
     TYPES = data.types || {};
+    KINDS = data.kinds || {};   // timeline color-by-kind (icon + match tokens); color is the CSS var
+    ABBREV = data.abbrev || {}; // acronym expansion for prettify() labels
   } catch {
-    /* leave LIBRARY/TYPES empty — no hardcoded fallback data */
+    /* leave LIBRARY/TYPES/KINDS/ABBREV empty — no hardcoded fallback data */
   }
 }
 
@@ -1642,7 +1729,8 @@ function renderResult(result) {
   const banner = $("banner");
   banner.hidden = true;
   banner.textContent = "";
-  // Every new result clears any open "why infeasible" explanation from the previous solve.
+  // Every new result clears any open "why infeasible" explanation and invalidates any in-flight one.
+  resultSeq++;
   const explain = $("explain");
   if (explain) { explain.hidden = true; explain.innerHTML = ""; }
 
@@ -1700,16 +1788,19 @@ async function explainInfeasible(btn) {
   panel.innerHTML = "";
   panel.append(makeEl("p", "Checking which rules conflict…", "explain-status"));
   if (btn) btn.disabled = true;
+  const seq = resultSeq; // if a newer solve lands while we await, this answer is stale — bail.
   let result;
   try {
     result = await post("/explain", solvePayload());
   } catch (err) {
+    if (seq !== resultSeq) return;
     panel.innerHTML = "";
     panel.append(makeEl("p", err.message, "explain-status"));
     return;
   } finally {
     if (btn) btn.disabled = false;
   }
+  if (seq !== resultSeq) return; // the plan was re-solved while we waited; discard this explanation
   panel.innerHTML = "";
   if (result.structural) {
     panel.append(makeEl("p",
@@ -1743,7 +1834,14 @@ async function explainInfeasible(btn) {
     const off = makeEl("button", "Disable", "btn btn-sm");
     off.type = "button";
     off.title = "Turn this rule off and re-solve";
-    off.onclick = () => { c.enabled = false; panel.hidden = true; render(); };
+    off.onclick = () => {
+      // Re-resolve by id at click time — the captured `c` may be orphaned if the plan changed
+      // (undo, example load, tab switch) since the explanation was rendered.
+      const live = scenario.constraints.find((x) => x.id === id);
+      if (live) live.enabled = false;
+      panel.hidden = true;
+      render();
+    };
     row.append(off);
     list.append(row);
   }
@@ -1768,8 +1866,117 @@ function drawTimeline(schedule, stale) {
   tl.append(scroll);
   const leg = buildLegend();
   if (leg) tl.append(leg);
+  tagNarrowBars(tl); // now that the bars are laid out, hide labels on bars too small for text
+  renderNowLine(); // the draggable mission-elapsed cursor, positioned over the laid-out tracks
   renderRoster(); // refresh solved times + the selected-row highlight after every redraw
 }
+
+// Bars narrower than ~text width drop their name and show just the kind icon (full detail on hover).
+// Runs after layout (bars must be in the DOM for offsetWidth) and again on every zoom change.
+function tagNarrowBars(scope) {
+  const root = scope || $("timeline");
+  for (const bar of root.querySelectorAll(".bar.bar-kind")) {
+    bar.classList.toggle("bar-narrow", bar.offsetWidth < 48);
+  }
+}
+
+// ---- the draggable mission-elapsed cursor -------------------------------
+// One full-height line across every lane, parked at `cursorMin` (defaults to the plan's start). The
+// gutter offset means we can't use a % left like the bars do, so we measure a real track's geometry
+// and place the line in pixels relative to .gantt — recomputed on every draw, zoom, and drag.
+function renderNowLine() {
+  const g = $("timeline").querySelector(".gantt");
+  if (!g || !axisCtx) return;
+  g.querySelector(".now-line")?.remove();
+  const track = g.querySelector(".gantt-track.lane");
+  const rows = g.querySelectorAll(".gantt-lane");
+  if (!track || !rows.length) return;
+  const { t0, span } = axisCtx;
+  if (cursorMin == null) cursorMin = t0; // first show: park at the start
+  cursorMin = Math.min(t0 + span, Math.max(t0, cursorMin)); // keep it on the axis
+
+  const line = document.createElement("div");
+  line.className = "now-line";
+  line.setAttribute("role", "slider");
+  line.setAttribute("aria-label", "Mission-elapsed cursor (drag to move)");
+  line.append(makeEl("span", timeLabel(cursorMin), "now-label"));
+  g.append(line);
+  positionNowLine(g); // place it now that it's in the DOM
+  line.addEventListener("mousedown", (e) => startNowDrag(e, g));
+}
+// Place the existing .now-line at cursorMin using the track column's measured geometry.
+function positionNowLine(g) {
+  const line = g.querySelector(".now-line");
+  const track = g.querySelector(".gantt-track.lane");
+  const rows = g.querySelectorAll(".gantt-lane");
+  if (!line || !track || !rows.length || !axisCtx) return;
+  const { t0, span } = axisCtx;
+  const frac = span > 0 ? (cursorMin - t0) / span : 0;
+  const x = track.offsetLeft + frac * track.offsetWidth;
+  const first = rows[0], last = rows[rows.length - 1];
+  line.style.left = x + "px";
+  line.style.top = first.offsetTop + "px";
+  line.style.height = (last.offsetTop + last.offsetHeight - first.offsetTop) + "px";
+  const lbl = line.querySelector(".now-label");
+  if (lbl) lbl.textContent = timeLabel(Math.round(cursorMin));
+}
+function startNowDrag(e, g) {
+  e.preventDefault();
+  const track = g.querySelector(".gantt-track.lane");
+  if (!track || !axisCtx) return;
+  const { t0, span } = axisCtx;
+  const move = (ev) => {
+    const r = track.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    cursorMin = t0 + frac * span;
+    positionNowLine(g);
+  };
+  const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+}
+
+// ---- one shared timeline tooltip ----------------------------------------
+// A single #gantt-tip follows the mouse and shows full detail for whichever bar it's over — one node,
+// not one per bar. Delegated off #timeline (which persists across redraws), so it's wired just once.
+let ganttTip = null;
+function wireGanttTooltip() {
+  const tl = $("timeline");
+  if (!tl || tl.dataset.tipWired) return;
+  tl.dataset.tipWired = "1";
+  tl.addEventListener("mousemove", (e) => {
+    const bar = e.target.closest(".bar[data-id]");
+    if (!bar) { hideGanttTip(); return; }
+    showGanttTip(bar, e);
+  });
+  tl.addEventListener("mouseleave", hideGanttTip);
+}
+function showGanttTip(bar, e) {
+  if (!ganttTip) {
+    ganttTip = document.createElement("div");
+    ganttTip.id = "gantt-tip";
+    ganttTip.hidden = true;
+    document.body.append(ganttTip);
+  }
+  const id = bar.dataset.id;
+  const a = findActivity(id);
+  const sec = (a && a.section && a.section.trim()) || "—";
+  const crew = crewOf({ id });
+  ganttTip.innerHTML = "";
+  ganttTip.append(makeEl("div", prettify(id), "tip-name"));
+  ganttTip.append(makeEl("div", timeLabel(+bar.dataset.start) + "–" + timeLabel(+bar.dataset.end), "tip-time"));
+  ganttTip.append(makeEl("div", crew ? "Crew " + crew + " · " + sec : sec, "tip-where"));
+  ganttTip.append(makeEl("div", id, "tip-id"));
+  ganttTip.hidden = false;
+  // Place near the cursor, flipping to the other side near the viewport edges.
+  const pad = 14, r = ganttTip.getBoundingClientRect();
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if (x + r.width > window.innerWidth) x = e.clientX - r.width - pad;
+  if (y + r.height > window.innerHeight) y = e.clientY - r.height - pad;
+  ganttTip.style.left = Math.max(4, x) + "px";
+  ganttTip.style.top = Math.max(4, y) + "px";
+}
+function hideGanttTip() { if (ganttTip) ganttTip.hidden = true; }
 
 // Apply the current zoom to a gantt element: X widens it past the panel (so .gantt-scroll scrolls),
 // Y scales lane height via a CSS var. Pure presentation — never re-solves.
@@ -1785,23 +1992,31 @@ function applyZoom() {
   const g = $("timeline").querySelector(".gantt");
   applyZoomTo(g);
   renderAxisTicks(g);
+  tagNarrowBars($("timeline")); // bar widths changed — re-decide which show their name vs icon only
+  if (g) positionNowLine(g); // track geometry changed — keep the cursor aligned
 }
 
-// A small legend of the activity types currently in use (color swatch -> label).
+// A small legend of the activity KINDS in the drawn plan (swatch + icon -> label), plus a note that
+// the lane axis encodes crew (or section). Colors come from the same --kind-* vars the bars use.
 function buildLegend() {
-  const used = [...new Set(scenario.activities.map((a) => a.type).filter((t) => t && TYPES[t]))];
+  const used = [...new Set((shownSchedule || []).map((s) => kindOf(s)))];
   if (!used.length) return null;
+  const order = Object.keys(KINDS);
+  used.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const leg = document.createElement("div");
   leg.className = "legend";
-  for (const t of used) {
+  for (const k of used) {
+    const def = KINDS[k] || {};
     const item = document.createElement("span");
     item.className = "legend-item";
-    const sw = document.createElement("span");
-    sw.className = "legend-swatch";
-    sw.style.background = TYPES[t].color;
-    item.append(sw, makeEl("span", TYPES[t].label));
+    const sw = makeEl("span", "", "legend-swatch");
+    sw.style.background = `var(--kind-${k})`;
+    item.append(sw);
+    if (def.icon) item.append(makeEl("span", def.icon, "legend-icon"));
+    item.append(makeEl("span", def.label || k));
     leg.append(item);
   }
+  leg.append(makeEl("span", "lane = " + (groupMode === "section" ? "section" : "crew"), "legend-note"));
   return leg;
 }
 
@@ -1810,13 +2025,27 @@ function sectionNames() {
   return [...new Set(scenario.activities.map((a) => (a.section && a.section.trim()) || "Ungrouped"))];
 }
 
-// Overview = every section collapsed to a summary bar; Lanes = every section expanded.
+// Overview = every lane collapsed to a summary bar; Lanes = every lane expanded.
 function setView(isOverview) {
   overview = isOverview;
   collapsed.clear();
-  if (overview) for (const s of sectionNames()) collapsed.add(s);
+  if (overview) for (const name of currentLaneNames()) collapsed.add(name);
   const btn = $("view-toggle");
   if (btn) btn.textContent = overview ? "Lanes" : "Overview";
+  drawTimeline(shownSchedule, shownStale);
+}
+
+// Group-by: "crew" swimlanes (default) vs "section" swimlanes. Presentation only — redraw, no re-solve.
+// Lane names differ between modes, so re-derive the collapsed set if Overview is active.
+function setGroupMode(mode) {
+  groupMode = mode === "section" ? "section" : "crew";
+  const btn = $("group-toggle");
+  if (btn) {
+    btn.textContent = groupMode === "crew" ? "Group: Crew" : "Group: Section";
+    btn.setAttribute("aria-label", "Group timeline by " + groupMode + " (click to switch)");
+  }
+  collapsed.clear();
+  if (overview) for (const name of currentLaneNames()) collapsed.add(name);
   drawTimeline(shownSchedule, shownStale);
 }
 
@@ -1897,25 +2126,25 @@ function buildGantt(schedule) {
   return solvedHorizon > DAY ? buildGanttMulti(schedule) : buildGanttDay(schedule);
 }
 
-// Shade the CLOSED hours of every enabled working_window behind the activity lanes, repeated per
-// day across [lo, hi). Reads live scenario.constraints (so bands still show over a dimmed
-// last-good schedule on INFEASIBLE). A band's lane is matched by the activity id in its label.
-function shadeClosedLanes(g, pct, lo, hi) {
+// Shade the CLOSED hours of every enabled working_window behind the lanes, repeated per day across
+// [lo, hi). Reads live scenario.constraints (so bands still show over a dimmed last-good schedule on
+// INFEASIBLE). A window is section-scoped, so it shades any lane that CONTAINS that section (a crew
+// lane mixes sections — `groups` maps lane name -> its items, so we can tell which sections it holds).
+function shadeClosedLanes(g, pct, lo, hi, groups) {
   const windows = scenario.constraints.filter(
     (c) => c.enabled !== false && c.type === "working_window"
   );
   if (!windows.length) return;
-  const sectionOf = (id) => {
-    const a = findActivity(id);
+  const sectionsIn = (items) => new Set((items || []).map((it) => {
+    const a = findActivity(it.id);
     return (a && a.section && a.section.trim()) || "Ungrouped";
-  };
-  for (const row of g.querySelectorAll(".gantt-activity")) {
-    const id = row.querySelector(".gantt-label")?.title;
-    const track = row.querySelector(".gantt-track.lane");
-    if (!id || !track) continue;
-    const sec = sectionOf(id);
+  }));
+  for (const row of g.querySelectorAll(".gantt-lane")) {
+    const secs = sectionsIn(groups.get(row.dataset.lane));
+    const tracks = row.querySelectorAll(".gantt-track.lane");
+    if (!tracks.length) continue;
     for (const w of windows) {
-      if (w.section !== "all" && w.section !== sec) continue;
+      if (w.section !== "all" && !secs.has(w.section)) continue;
       const o = toMin(w.open), cl = toMin(w.close);
       if (o == null || cl == null || o === cl) continue;
       const gaps = o < cl ? [[0, o], [cl, DAY]] : [[cl, o]];
@@ -1923,12 +2152,50 @@ function shadeClosedLanes(g, pct, lo, hi) {
         for (const [g0, g1] of gaps) {
           const s = Math.max(lo, day0 + g0), e = Math.min(hi, day0 + g1);
           if (e <= s) continue;
-          const band = document.createElement("div");
-          band.className = "closed-band";
-          band.style.left = pct(s) + "%";
-          band.style.width = (pct(e) - pct(s)) + "%";
-          track.prepend(band); // under the bars (prepended like day-gridlines)
+          for (const track of tracks) {
+            const band = document.createElement("div");
+            band.className = "closed-band";
+            band.style.left = pct(s) + "%";
+            band.style.width = (pct(e) - pct(s)) + "%";
+            track.prepend(band); // under the bars (prepended like day-gridlines)
+          }
         }
+      }
+    }
+  }
+}
+
+// Merge overlapping [start,end] intervals into a minimal sorted set.
+function mergeIntervals(spans) {
+  if (!spans.length) return [];
+  const s = [...spans].sort((a, b) => a[0] - b[0]);
+  const out = [s[0].slice()];
+  for (let i = 1; i < s.length; i++) {
+    const last = out[out.length - 1];
+    if (s[i][0] <= last[1]) last[1] = Math.max(last[1], s[i][1]);
+    else out.push(s[i].slice());
+  }
+  return out;
+}
+
+// Orientation shading behind ALL lanes: --night-band over the hours the crew sleeps and --comms-band
+// over comms-coverage windows. Both are DERIVED from the scheduled items (the union of sleep-kind /
+// comms-kind spans), so there are no hardcoded clock hours — the bands move with the actual plan.
+function shadeContextBands(g, pct, lo, hi, schedule) {
+  const tracks = g.querySelectorAll(".gantt-track.lane");
+  if (!tracks.length) return;
+  for (const { cls, kind } of [{ cls: "night-band", kind: "sleep" }, { cls: "comms-band", kind: "comms" }]) {
+    const merged = mergeIntervals(schedule.filter((it) => kindOf(it) === kind).map((it) => [it.start, it.end]));
+    if (!merged.length) continue;
+    for (const track of tracks) {
+      for (const [s0, e0] of merged) {
+        const s = Math.max(lo, s0), e = Math.min(hi, e0);
+        if (e <= s) continue;
+        const band = document.createElement("div");
+        band.className = "ctx-band " + cls;
+        band.style.left = pct(s) + "%";
+        band.style.width = (pct(e) - pct(s)) + "%";
+        track.prepend(band); // under the bars and the working-window closed bands
       }
     }
   }
@@ -1959,27 +2226,11 @@ function buildGanttDay(schedule) {
   axis.append(axisTrack);
   g.append(axis);
 
-  // Group activities into section swimlanes (OPEN by default; click a header to collapse).
-  const sectionOf = (id) => {
-    const a = findActivity(id);
-    return (a && a.section && a.section.trim()) || "Ungrouped";
-  };
-  const groups = new Map();
-  for (const item of schedule) {
-    const sec = sectionOf(item.id);
-    if (!groups.has(sec)) groups.set(sec, []);
-    groups.get(sec).push(item);
-  }
-  const caps = activityCaps();
-  for (const [sec, items] of groups) {
-    const isOpen = !collapsed.has(sec);
-    const tight = items.some((it) => isTight(it, caps));
-    g.append(sectionHeaderRow(sec, items, isOpen, tight, pct));
-    if (isOpen) {
-      [...items].sort((a, b) => a.start - b.start).forEach((item) => g.append(activityRow(item, pct)));
-    }
-  }
-  shadeClosedLanes(g, pct, t0, t1);
+  // Group into swimlanes (crew or section) and render each lane-packed (OPEN by default).
+  const groups = laneGroups(schedule);
+  for (const [lane, items] of groups) g.append(laneRow(lane, items, pct));
+  shadeContextBands(g, pct, t0, t1, schedule);
+  shadeClosedLanes(g, pct, t0, t1, groups);
   axisCtx = { t0, span, mode: "day" };
   renderAxisTicks(g);
   return g;
@@ -2007,28 +2258,11 @@ function buildGanttMulti(schedule) {
   axis.append(axisTrack);
   g.append(axis);
 
-  // Group into section swimlanes (same as the single-day view).
-  const sectionOf = (id) => {
-    const a = findActivity(id);
-    return (a && a.section && a.section.trim()) || "Ungrouped";
-  };
-  const groups = new Map();
-  for (const item of schedule) {
-    const sec = sectionOf(item.id);
-    if (!groups.has(sec)) groups.set(sec, []);
-    groups.get(sec).push(item);
-  }
-  const caps = activityCaps();
-  for (const [sec, items] of groups) {
-    const isOpen = !collapsed.has(sec);
-    const tight = items.some((it) => isTight(it, caps));
-    g.append(sectionHeaderRow(sec, items, isOpen, tight, pct));
-    if (isOpen) {
-      [...items].sort((a, b) => a.start - b.start).forEach((item) => g.append(activityRow(item, pct)));
-    }
-  }
+  // Group into swimlanes (crew or section), lane-packed — same grouping as the single-day view.
+  const groups = laneGroups(schedule);
+  for (const [lane, items] of groups) g.append(laneRow(lane, items, pct));
 
-  // Paint faint day separators behind every lane so the day stripes line up across all rows.
+  // Paint faint day separators behind every packed track so the day stripes line up across all rows.
   // Prepend so they sit under the bars, not over them.
   for (const track of g.querySelectorAll(".gantt-track.lane")) {
     for (let d = 1; d < totalDays; d++) {
@@ -2038,77 +2272,144 @@ function buildGanttMulti(schedule) {
       track.prepend(line);
     }
   }
-  shadeClosedLanes(g, pct, 0, horizon);
+  shadeContextBands(g, pct, 0, horizon, schedule);
+  shadeClosedLanes(g, pct, 0, horizon, groups);
   axisCtx = { t0: 0, span: horizon, mode: "multi", totalDays };
   renderAxisTicks(g);
   return g;
 }
 
-// A section header: caret + name + task count (+ ⚠ if any task is tight), with a rolled-up
-// summary bar spanning the section's busy window when collapsed. Clicking it toggles open/closed.
-function sectionHeaderRow(sec, items, isOpen, tight, pct) {
+// Group the schedule into swimlanes by the current groupMode, in a stable order: Crew A–D first,
+// then other lanes alphabetically, with "Shared" last. Returns a Map(laneName -> items).
+function laneGroups(schedule) {
+  const groups = new Map();
+  for (const item of schedule) {
+    const lane = laneOf(item, groupMode);
+    if (!groups.has(lane)) groups.set(lane, []);
+    groups.get(lane).push(item);
+  }
+  const ordered = new Map();
+  for (const name of orderLanes([...groups.keys()])) ordered.set(name, groups.get(name));
+  return ordered;
+}
+function orderLanes(names) {
+  const crew = [], rest = [];
+  for (const n of names) (/^Crew [A-D]$/.test(n) ? crew : rest).push(n);
+  crew.sort();
+  rest.sort((a, b) => (a === "Shared") - (b === "Shared") || a.localeCompare(b)); // Shared last
+  return [...crew, ...rest];
+}
+
+// Greedy first-fit packing: returns sub-lanes (arrays of items) where no two items in a sub-lane
+// overlap. Sequential tasks share a row; genuinely-parallel tasks open a new one — never stacked.
+function packSubLanes(items) {
+  const subs = [];
+  for (const it of [...items].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    let sub = subs.find((s) => s.lastEnd <= it.start);
+    if (!sub) { sub = []; sub.lastEnd = -Infinity; subs.push(sub); }
+    sub.push(it);
+    sub.lastEnd = it.end;
+  }
+  return subs;
+}
+
+// Lane utilization %: union of busy intervals (so parallel sub-lanes don't double-count) over the
+// drawn horizon. The 2-second "how loaded is this crew/section?" read in the lane gutter.
+function laneUtil(items) {
+  const h = solvedHorizon || DAY;
+  if (!h || !items.length) return null;
+  let busy = 0, s = null, e = null;
+  for (const it of [...items].sort((a, b) => a.start - b.start)) {
+    if (e === null || it.start > e) { if (e !== null) busy += e - s; s = it.start; e = it.end; }
+    else e = Math.max(e, it.end);
+  }
+  if (e !== null) busy += e - s;
+  return Math.round((100 * busy) / h);
+}
+
+// Lane names of the drawn plan (for the Overview toggle, which collapses every lane). Empty if no plan.
+function currentLaneNames() {
+  return shownSchedule && shownSchedule.length ? [...laneGroups(shownSchedule).keys()] : [];
+}
+
+// One swimlane row: a gutter (caret + name + count + util% + ⚠) and a STACK of greedy-packed tracks
+// (so non-overlapping tasks share a row). Collapsed -> one roll-up summary bar. Click toggles it.
+function laneRow(lane, items, pct) {
+  const isOpen = !collapsed.has(lane);
+  const caps = activityCaps();
+  const tight = items.some((it) => isTight(it, caps));
   const row = document.createElement("div");
-  row.className = "gantt-row gantt-section";
+  row.className = "gantt-row gantt-lane";
+  row.dataset.lane = lane;
 
   const label = document.createElement("div");
-  label.className = "gantt-label sec-label";
-  label.append(makeEl("span", isOpen ? "▾" : "▸", "sec-caret"));
-  label.append(makeEl("span", sec, "sec-name"));
-  label.append(makeEl("span", String(items.length), "sec-count"));
-  if (tight) label.append(makeEl("span", "⚠", "sec-warn"));
-  label.title = `${sec} — ${items.length} task(s)` + (isOpen ? "" : " (click to expand)");
+  label.className = "gantt-label lane-label";
+  const top = makeEl("div", "", "lane-top");
+  top.append(makeEl("span", isOpen ? "▾" : "▸", "sec-caret"));
+  top.append(makeEl("span", lane, "sec-name"));
+  top.append(makeEl("span", String(items.length), "sec-count"));
+  if (tight) top.append(makeEl("span", "⚠", "sec-warn"));
+  label.append(top);
+  const util = laneUtil(items);
+  if (util != null) label.append(makeEl("span", util + "%", "lane-util"));
+  label.title = `${lane} — ${items.length} task(s)` + (util != null ? `, ${util}% utilized` : "") +
+    (isOpen ? "" : " (click to expand)");
   onActivate(label, () => {
-    if (collapsed.has(sec)) collapsed.delete(sec);
-    else collapsed.add(sec);
+    if (collapsed.has(lane)) collapsed.delete(lane);
+    else collapsed.add(lane);
     drawTimeline(shownSchedule, shownStale);
   });
   row.append(label);
 
-  const track = document.createElement("div");
-  track.className = "gantt-track lane";
-  if (!isOpen) {
+  const stack = document.createElement("div");
+  stack.className = "lane-stack";
+  if (isOpen) {
+    for (const sub of packSubLanes(items)) {
+      const track = document.createElement("div");
+      track.className = "gantt-track lane";
+      for (const it of sub) track.append(activityBar(it, pct));
+      stack.append(track);
+    }
+  } else {
+    const track = document.createElement("div");
+    track.className = "gantt-track lane";
     const lo = Math.min(...items.map((i) => i.start));
     const hi = Math.max(...items.map((i) => i.end));
     const bar = document.createElement("div");
     bar.className = "bar bar-summary" + (tight ? " bar-snug" : "");
     bar.style.left = pct(lo) + "%";
     bar.style.width = Math.max(0.8, pct(hi) - pct(lo)) + "%";
-    bar.title = `${sec}: ${timeLabel(lo)}–${timeLabel(hi)}, ${items.length} task(s)`;
+    bar.title = `${lane}: ${timeLabel(lo)}–${timeLabel(hi)}, ${items.length} task(s)`;
     bar.append(makeEl("span", `${items.length} tasks`, "bar-time"));
     track.append(bar);
+    stack.append(track);
   }
-  row.append(track);
+  row.append(stack);
   return row;
 }
 
-// One activity lane (shown when its section is expanded).
-function activityRow(item, pct) {
-  const row = document.createElement("div");
-  row.className = "gantt-row gantt-activity";
-  const label = makeEl("div", item.id, "gantt-label");
-  label.title = item.id;
-  row.append(label);
-  const track = document.createElement("div");
-  track.className = "gantt-track lane";
+// One positioned bar for a scheduled item: kind color + icon + clean name in-bar (time shows on
+// hover via the shared tooltip, not in-bar). Reusable — a single packed track holds several of these
+// (Phase 2), so this is factored out of the row. Clicking selects + opens the Inspector (no re-solve).
+function activityBar(item, pct) {
   const bar = document.createElement("div");
-  bar.className = "bar" + (sourceId(item.id) === selectedId ? " selected" : "");
+  bar.className = "bar bar-kind" + (sourceId(item.id) === selectedId ? " selected" : "");
   bar.dataset.id = item.id;
+  bar.dataset.start = item.start;
+  bar.dataset.end = item.end;
   bar.style.left = pct(item.start) + "%";
   bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
-  bar.style.background = colorFor(item.id);
-  bar.title = `${item.id}: ${timeLabel(item.start)}–${timeLabel(item.end)}`;
-  bar.append(makeEl("span", `${timeLabel(item.start)}–${timeLabel(item.end)}`, "bar-time"));
-  // Select this activity: re-highlight + open the Inspector from the schedule on hand.
-  // Nothing in the scenario changed, so we redraw + refresh — never re-solve.
+  bar.style.background = barColor(item);
+  bar.setAttribute("aria-label", `${prettify(item.id)} ${timeLabel(item.start)}–${timeLabel(item.end)}`);
+  bar.append(makeEl("span", iconFor(item), "bar-icon"));
+  bar.append(makeEl("span", prettify(item.id), "bar-name"));
   onActivate(bar, () => {
     selectedId = sourceId(item.id);
     drawTimeline(shownSchedule, shownStale);
     renderInspector();
     openInspector();
   });
-  track.append(bar);
-  row.append(track);
-  return row;
+  return bar;
 }
 
 // Pick a round tick spacing (in minutes) so the single-day axis shows ~6 labels per panel-width.

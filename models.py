@@ -169,8 +169,20 @@ class Scenario(BaseModel):
 
     @model_validator(mode="after")
     def _fill_ids(self):
-        # Local LLMs often omit the constraint "id"; give each one a stable id.
-        for i, c in enumerate(self.constraints, 1):
+        # Local LLMs often omit the constraint "id"; give each blank one a stable, unused id.
+        # The UI addresses constraints BY id (the enable toggle, the "why infeasible" disable
+        # button), so ids must be unique — fill blanks without colliding, then reject any duplicates
+        # rather than letting the UI silently target the wrong rule.
+        used = {c.id for c in self.constraints if c.id}
+        n = 1
+        for c in self.constraints:
             if not c.id:
-                c.id = f"c{i}"
+                while f"c{n}" in used:
+                    n += 1
+                c.id = f"c{n}"
+                used.add(c.id)
+        ids = [c.id for c in self.constraints]
+        if len(ids) != len(set(ids)):
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError("constraint ids must be unique; duplicate(s): " + ", ".join(dupes))
         return self

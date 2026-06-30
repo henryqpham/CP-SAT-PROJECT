@@ -41,6 +41,17 @@
   --nasa-blue: #0b3d91;                     /* gradients only, never text */
   --bar: #4c8dff;                           /* default timeline bar */
 
+  /* activity-KIND palette (Okabe-Ito, colorblind-safe). Lane = crew, hue = kind — never both.
+     Add/recolor a kind = one var here + one row in library.json; zero JS changes. */
+  --kind-sleep:    #4A5C7A;  /* dark/desaturated — recedes, reads as down-time */
+  --kind-meal:     #E69F00;  /* amber */
+  --kind-exercise: #56B4A9;  /* teal  */
+  --kind-eva:      #D55E00;  /* alert orange — the thing managers watch */
+  --kind-comms:    #56A0CC;  /* blue  */
+  --kind-ops:      #999999;  /* neutral grey (default/unknown) */
+  --night-band:    rgba(20, 28, 48, 0.5);   /* behind sleep/rest hours */
+  --comms-band:    rgba(86, 160, 204, 0.12);/* behind comms-coverage windows */
+
   /* semantic — bad = Artemis red-orange, alert/over ONLY */
   --ok: #34d17a;   --ok-bg: rgba(52, 209, 122, 0.14);  --ok-border: rgba(52, 209, 122, 0.32);
   --warn: #f5b13d; --warn-bg: rgba(245, 177, 61, 0.14); --warn-border: rgba(245, 177, 61, 0.32);
@@ -421,10 +432,26 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 }
 .result-actions { display: flex; align-items: center; gap: 0.5rem; }
 
-/* legend: which color means which activity type */
+/* legend: which color (and icon) means which activity kind; trailing note states the lane axis */
 .legend { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--muted); }
 .legend-item { display: flex; align-items: center; gap: 0.3rem; }
 .legend-swatch { width: 0.7rem; height: 0.7rem; border-radius: 3px; flex: 0 0 auto; }
+.legend-icon { font-size: 0.85rem; line-height: 1; }
+.legend-note { margin-left: auto; font-style: italic; color: var(--faint); }
+
+/* one shared timeline tooltip (full detail for the hovered bar; follows the cursor) */
+#gantt-tip {
+  position: fixed; z-index: 50; pointer-events: none;
+  max-width: 16rem; padding: 0.4rem 0.55rem;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-hover);
+  font-size: 0.76rem; color: var(--ink); line-height: 1.4;
+}
+#gantt-tip[hidden] { display: none; }
+.tip-name { font-weight: 600; }
+.tip-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+.tip-where { color: var(--muted); }
+.tip-id { font-family: var(--font-mono); color: var(--faint); font-size: 0.7rem; margin-top: 0.15rem; }
 .pill {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -472,6 +499,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 
 /* gantt */
 .gantt {
+  position: relative; /* the now-line is positioned against this */
   margin-top: 1rem;
   font-size: 0.8rem;
   background: var(--glass-dense);
@@ -522,6 +550,37 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   background: var(--closed-fill);
   pointer-events: none;
 }
+/* orientation bands derived from the schedule: night = when the crew sleeps, comms = coverage windows */
+.ctx-band { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.night-band { background: var(--night-band); }
+.comms-band { background: var(--comms-band); }
+/* the draggable mission-elapsed cursor: a full-height line over every lane with a time chip on top */
+.now-line {
+  position: absolute;
+  width: 0;
+  border-left: 2px solid var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+  cursor: ew-resize;
+  z-index: 4;
+}
+/* a wider invisible hit strip so the thin line is easy to grab and drag */
+.now-line::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; width: 9px; }
+.now-label {
+  position: absolute;
+  top: -1.1rem;
+  left: 0;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  padding: 0.05rem 0.3rem;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  cursor: ew-resize;
+}
 .tick-label { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.66rem; white-space: nowrap; }
 /* day boundaries on the multi-day axis: brighter + bold so they stand out from the HH:MM ticks */
 .tick-label.tick-day { color: var(--ink); font-weight: 600; }
@@ -544,6 +603,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 }
 .bar:hover { transform: translateY(-1px); border-color: var(--line-hover); box-shadow: var(--shadow-hover); filter: brightness(1.08); z-index: 2; }
 .bar-time { font-family: var(--font-mono); font-size: 0.66rem; font-variant-numeric: tabular-nums; opacity: 0.95; }
+/* kind bars carry an icon + a clean name; the name ellipsizes, the icon never drops */
+.bar-kind { gap: 0.25rem; font-size: 0.72rem; }
+.bar-icon { flex: 0 0 auto; line-height: 1; }
+.bar-name { overflow: hidden; text-overflow: ellipsis; }
+/* too narrow for text: center the icon and drop the name (full detail is on hover) */
+.bar-narrow { justify-content: center; padding: 0; }
+.bar-narrow .bar-name { display: none; }
 /* the bar the user clicked to inspect — persistent blue glow (vs the white hover lift) */
 .bar.selected { border-color: var(--accent); box-shadow: var(--shadow-glow); z-index: 3; }
 .bar.selected:hover { filter: brightness(1.08); transform: translateY(-1px); }
@@ -602,26 +668,34 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .cap-bar.cap-over .cap-fill { background: var(--bad); }
 .health-over { color: var(--bad); font-weight: 700; }
 
-/* section rows in the timeline (click a section header to collapse or expand it) */
-.gantt-section { margin-top: 0.15rem; }
-.gantt-section .gantt-label {
+/* swimlane rows: a clickable gutter (name + util%) beside a vertical stack of greedy-packed tracks.
+   The gutter shows the lane name on top and its utilization % below; the stack grows downward, one
+   track per packed sub-lane, so non-overlapping tasks share a row. Click the gutter to collapse. */
+.gantt-lane { align-items: stretch; margin-top: 0.15rem; }
+.lane-label {
   cursor: pointer;
   display: flex;
-  align-items: center;
-  gap: 0.3rem;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0.05rem;
   text-align: left;
   font-weight: 600;
   color: var(--ink);
   padding-right: 0.4rem;
   transition: color var(--t-fast) var(--ease);
 }
-.gantt-section .gantt-label:hover { color: var(--accent); }
+.lane-label:hover { color: var(--accent); }
+.lane-top { display: flex; align-items: center; gap: 0.3rem; width: 100%; min-width: 0; }
+.lane-util { padding-left: 1.1rem; font-size: 0.7rem; font-weight: 500; color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .sec-caret { color: var(--muted); width: 0.8rem; flex: 0 0 auto; }
-.sec-name { overflow: hidden; text-overflow: ellipsis; }
+.sec-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sec-count { color: var(--muted); font-weight: 500; font-size: 0.75rem; font-family: var(--font-mono); }
-.sec-warn { color: var(--bad); }
+.sec-warn { color: var(--bad); flex: 0 0 auto; }
 .bar-summary { background: var(--surface-3); border-color: var(--border-strong); }
-.gantt-activity .gantt-label { color: var(--muted); font-weight: 400; font-family: var(--font-mono); }
+/* the packed tracks for one lane, stacked vertically */
+.lane-stack { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lane-stack .gantt-track { flex: 0 0 auto; }
 
 /* inspector (popup modal): label + input rows for the selected activity */
 .insp-title { font-size: 0.95rem; margin: 0 0 0.6rem; }
