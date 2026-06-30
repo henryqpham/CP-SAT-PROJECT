@@ -1,0 +1,607 @@
+{
+  "activities": [
+    {
+      "id": "post_sleep_A_1",
+      "duration": 60
+    },
+    {
+      "id": "meal_b",
+      "duration": 30,
+      "recurs_daily": true,
+      "daily_window": { "open": "06:00", "close": "08:00" }
+    },
+    {
+      "id": "meal_l",
+      "duration": 30,
+      "recurs_daily": true,
+      "daily_window": { "open": "11:00", "close": "13:00" }
+    },
+    {
+      "id": "meal_d",
+      "duration": 30,
+      "recurs_daily": true,
+      "daily_window": { "open": "18:00", "close": "20:00" }
+    },
+    {
+      "id": "comms_pass_am",
+      "duration": 45,
+      "section": "Comms",
+      "recurs_daily": true,
+      "daily_window": { "open": "08:00", "close": "10:00" }
+    },
+    {
+      "id": "comms_pass_pm",
+      "duration": 45,
+      "section": "Comms",
+      "recurs_daily": true,
+      "daily_window": { "open": "18:00", "close": "20:00" }
+    },
+    {
+      "id": "comms_flight_conf",
+      "duration": 20,
+      "section": "Comms",
+      "recurs_daily": true,
+      "daily_window": { "open": "20:00", "close": "22:00" }
+    },
+    {
+      "id": "exercise_A",
+      "duration": 120,
+      "section": "Exercise A",
+      "recurs_daily": true,
+      "daily_window": { "open": "14:00", "close": "18:00" }
+    },
+    {
+      "id": "exercise_B",
+      "duration": 120,
+      "section": "Exercise B",
+      "recurs_daily": true,
+      "daily_window": { "open": "14:00", "close": "18:00" },
+      "days": [0, 2]
+    },
+    {
+      "id": "exercise_C",
+      "duration": 120,
+      "section": "Exercise C",
+      "recurs_daily": true,
+      "daily_window": { "open": "14:00", "close": "18:00" },
+      "days": [0, 1]
+    },
+    {
+      "id": "exercise_D",
+      "duration": 120,
+      "section": "Exercise D",
+      "recurs_daily": true,
+      "daily_window": { "open": "14:00", "close": "18:00" }
+    },
+    {
+      "id": "orion_dpc_A",
+      "duration": 30,
+      "section": "Orion"
+    },
+    {
+      "id": "orion_sys_check_A",
+      "duration": 45,
+      "section": "Orion"
+    },
+    {
+      "id": "orion_gnc_cal_A",
+      "duration": 40,
+      "section": "Orion"
+    },
+    {
+      "id": "orion_burn_A",
+      "duration": 60,
+      "section": "Orion"
+    },
+    {
+      "id": "orion_rcs_B_1",
+      "duration": 30,
+      "section": "Orion"
+    },
+    {
+      "id": "pre_sleep_A_1",
+      "duration": 60
+    },
+    {
+      "id": "sleep_A_1",
+      "duration": 480,
+      "section": "Rest A"
+    },
+    {
+      "id": "sleep_B_1",
+      "duration": 480,
+      "section": "Rest B"
+    },
+    {
+      "id": "sleep_C_1",
+      "duration": 480,
+      "section": "Rest C"
+    },
+    {
+      "id": "sleep_D_1",
+      "duration": 480,
+      "section": "Rest D"
+    },
+    {
+      "id": "post_sleep_A_2",
+      "duration": 60
+    },
+    {
+      "id": "orion_dpc_B",
+      "duration": 30,
+      "section": "Orion"
+    },
+    {
+      "id": "hls_dock_B",
+      "duration": 90,
+      "section": "HLS"
+    },
+    {
+      "id": "hls_ingress_C",
+      "duration": 60,
+      "section": "HLS"
+    },
+    {
+      "id": "hls_transfer_D",
+      "duration": 75,
+      "section": "HLS"
+    },
+    {
+      "id": "hls_descent_prep_D",
+      "duration": 60,
+      "section": "HLS"
+    },
+    {
+      "id": "eva_suit_prep_C",
+      "duration": 90,
+      "section": "xEVA"
+    },
+    {
+      "id": "comms_pao",
+      "duration": 30,
+      "section": "Comms"
+    },
+    {
+      "id": "orion_stow_B",
+      "duration": 45,
+      "section": "Orion"
+    },
+    {
+      "id": "pre_sleep_A_2",
+      "duration": 60
+    },
+    {
+      "id": "sleep_A_2",
+      "duration": 480,
+      "section": "Rest A"
+    },
+    {
+      "id": "sleep_B_2",
+      "duration": 480,
+      "section": "Rest B"
+    },
+    {
+      "id": "sleep_C_2",
+      "duration": 480,
+      "section": "Rest C"
+    },
+    {
+      "id": "sleep_D_2",
+      "duration": 480,
+      "section": "Rest D"
+    },
+    {
+      "id": "post_sleep_A_3",
+      "duration": 60
+    },
+    {
+      "id": "comms_eva_conf",
+      "duration": 30,
+      "section": "Comms"
+    },
+    {
+      "id": "eva_don_C",
+      "duration": 60,
+      "section": "xEVA"
+    },
+    {
+      "id": "eva_prebreathe_C",
+      "duration": 30,
+      "section": "xEVA"
+    },
+    {
+      "id": "eva_egress_C",
+      "duration": 30,
+      "section": "xEVA"
+    },
+    {
+      "id": "comms_eva_coverage",
+      "duration": 240,
+      "section": "Comms"
+    },
+    {
+      "id": "eva_tasks_C",
+      "duration": 240,
+      "section": "xEVA"
+    },
+    {
+      "id": "eva_ingress_C",
+      "duration": 30,
+      "section": "xEVA"
+    },
+    {
+      "id": "eva_doff_C",
+      "duration": 45,
+      "section": "xEVA"
+    },
+    {
+      "id": "hls_ascent_prep_D",
+      "duration": 45,
+      "section": "HLS"
+    },
+    {
+      "id": "orion_rcs_B_2",
+      "duration": 30,
+      "section": "Orion"
+    },
+    {
+      "id": "hls_undock_D",
+      "duration": 45,
+      "section": "HLS"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "time_window",
+      "id": "c1",
+      "activity": "post_sleep_A_1",
+      "earliest": "07:00",
+      "enabled": true,
+      "label": "Day-1 wake window 07:00-08:00 (anchors Day 1 to the calendar)",
+      "source": "crew A wakes ~07:00 on Day 1; this is the only absolute anchor that keeps Day-1 work on the first calendar day, the rest cascades off ordering",
+      "latest_end": "08:00"
+    },
+    {
+      "type": "no_overlap",
+      "id": "c4",
+      "activities": [
+        "post_sleep_A_1",
+        "orion_dpc_A",
+        "orion_sys_check_A",
+        "orion_gnc_cal_A",
+        "orion_burn_A",
+        "pre_sleep_A_1",
+        "sleep_A_1",
+        "post_sleep_A_2",
+        "pre_sleep_A_2",
+        "sleep_A_2",
+        "post_sleep_A_3"
+      ],
+      "enabled": true,
+      "label": "Crew A (Commander) - one task at a time",
+      "source": "crew member A cannot do two activities simultaneously"
+    },
+    {
+      "type": "no_overlap",
+      "id": "c5",
+      "activities": [
+        "orion_rcs_B_1",
+        "sleep_B_1",
+        "orion_dpc_B",
+        "hls_dock_B",
+        "orion_stow_B",
+        "sleep_B_2",
+        "orion_rcs_B_2"
+      ],
+      "enabled": true,
+      "label": "Crew B (Pilot) - one task at a time",
+      "source": "crew member B cannot do two activities simultaneously"
+    },
+    {
+      "type": "no_overlap",
+      "id": "c6",
+      "activities": [
+        "sleep_C_1",
+        "hls_ingress_C",
+        "eva_suit_prep_C",
+        "sleep_C_2",
+        "eva_don_C",
+        "eva_prebreathe_C",
+        "eva_egress_C",
+        "eva_tasks_C",
+        "eva_ingress_C",
+        "eva_doff_C"
+      ],
+      "enabled": true,
+      "label": "Crew C (EVA-1) - one task at a time",
+      "source": "crew member C, the EVA crew, cannot do two activities simultaneously"
+    },
+    {
+      "type": "no_overlap",
+      "id": "c7",
+      "activities": [
+        "sleep_D_1",
+        "hls_transfer_D",
+        "hls_descent_prep_D",
+        "sleep_D_2",
+        "hls_ascent_prep_D",
+        "hls_undock_D"
+      ],
+      "enabled": true,
+      "label": "Crew D (Mission Specialist) - one task at a time",
+      "source": "crew member D cannot do two activities simultaneously"
+    },
+    {
+      "type": "sequence",
+      "id": "c8",
+      "activities": [
+        "post_sleep_A_1",
+        "orion_dpc_A"
+      ],
+      "enabled": true,
+      "label": "Day-1 morning backbone: wake -> DPC",
+      "source": "the day starts post-sleep, then the daily planning conference (breakfast is now a recurring daily meal, no longer wired into this chain)"
+    },
+    {
+      "type": "sequence",
+      "id": "c9",
+      "activities": [
+        "hls_dock_B",
+        "hls_ingress_C",
+        "hls_transfer_D",
+        "hls_descent_prep_D"
+      ],
+      "enabled": true,
+      "label": "HLS activation order: dock -> ingress -> transfer -> descent prep",
+      "source": "bus power-up sequence; each HLS step must finish before the next begins"
+    },
+    {
+      "type": "precedence",
+      "id": "c10",
+      "before": "orion_gnc_cal_A",
+      "after": "orion_burn_A",
+      "enabled": true,
+      "label": "GN&C alignment before the burn",
+      "source": "star-tracker alignment must complete before any TCM maneuver"
+    },
+    {
+      "type": "precedence",
+      "id": "c11",
+      "before": "orion_sys_check_A",
+      "after": "orion_gnc_cal_A",
+      "enabled": true,
+      "label": "Systems check before GN&C cal",
+      "source": "caution & warning status check precedes GN&C alignment work"
+    },
+    {
+      "type": "precedence",
+      "id": "c12",
+      "before": "orion_dpc_A",
+      "after": "orion_sys_check_A",
+      "enabled": true,
+      "label": "DPC before day-1 systems work",
+      "source": "the daily plan is read up before crew start the systems block"
+    },
+    {
+      "type": "precedence",
+      "id": "c13",
+      "before": "orion_rcs_B_1",
+      "after": "hls_dock_B",
+      "enabled": true,
+      "label": "RCS checkout (day 1) before HLS docking (day 2)",
+      "source": "RCS thrusters must be checked out before any docking op"
+    },
+    {
+      "type": "precedence",
+      "id": "c14",
+      "before": "eva_suit_prep_C",
+      "after": "eva_don_C",
+      "enabled": true,
+      "label": "Suit prep (day 2) before EVA donning (day 3)",
+      "source": "suits and tools are configured the day before the EVA"
+    },
+    {
+      "type": "precedence",
+      "id": "c15",
+      "before": "comms_eva_conf",
+      "after": "eva_don_C",
+      "enabled": true,
+      "label": "EVA go/no-go conference before donning",
+      "source": "no suit-up until the go/no-go conference clears the EVA"
+    },
+    {
+      "type": "precedence",
+      "id": "c16",
+      "before": "eva_doff_C",
+      "after": "hls_ascent_prep_D",
+      "enabled": true,
+      "label": "EVA complete (doff) before ascent prep",
+      "source": "the EVA campaign must finish before ascent-engine checkout"
+    },
+    {
+      "type": "precedence",
+      "id": "c17",
+      "before": "orion_rcs_B_2",
+      "after": "hls_undock_D",
+      "enabled": true,
+      "label": "RCS checkout (day 3) before HLS undock",
+      "source": "RCS re-checked before separation/undock"
+    },
+    {
+      "type": "precedence",
+      "id": "c18",
+      "before": "pre_sleep_A_1",
+      "after": "sleep_A_1",
+      "enabled": true,
+      "label": "Day-1 pre-sleep before day-1 sleep",
+      "source": "crew A winds down then sleeps; orders the close-out of day 1"
+    },
+    {
+      "type": "precedence",
+      "id": "c20",
+      "before": "sleep_A_1",
+      "after": "post_sleep_A_2",
+      "enabled": true,
+      "label": "Day-1 sleep before day-2 wake (forces day rollover)",
+      "source": "crew A must finish the day-1 sleep block before day-2 starts"
+    },
+    {
+      "type": "precedence",
+      "id": "c21",
+      "before": "pre_sleep_A_2",
+      "after": "sleep_A_2",
+      "enabled": true,
+      "label": "Day-2 pre-sleep before day-2 sleep",
+      "source": "crew A winds down then sleeps on day 2"
+    },
+    {
+      "type": "precedence",
+      "id": "c22",
+      "before": "sleep_A_2",
+      "after": "post_sleep_A_3",
+      "enabled": true,
+      "label": "Day-2 sleep before day-3 wake (forces day rollover)",
+      "source": "crew A must finish the day-2 sleep block before day-3 starts"
+    },
+    {
+      "type": "sequence",
+      "id": "c23",
+      "activities": [
+        "eva_don_C",
+        "eva_prebreathe_C",
+        "eva_egress_C",
+        "eva_tasks_C",
+        "eva_ingress_C",
+        "eva_doff_C"
+      ],
+      "enabled": true,
+      "label": "EVA chain: don -> prebreathe -> egress -> tasks -> ingress -> doff",
+      "source": "strict EVA protocol; prebreathe immediately precedes egress, no break"
+    },
+    {
+      "type": "precedence",
+      "id": "c24",
+      "before": "comms_eva_conf",
+      "after": "comms_eva_coverage",
+      "enabled": true,
+      "label": "Go/no-go conference before ground coverage is established",
+      "source": "ground brings up continuous EVA comms coverage once the conference clears the EVA; coverage then runs in parallel with the EVA (the IR cannot force an overlap, so coverage floats alongside the tasks block)"
+    },
+    {
+      "type": "conditional",
+      "id": "c25",
+      "when": {
+        "activity": "comms_pao",
+        "present": false
+      },
+      "then": {
+        "set_duration": {
+          "activity": "eva_prebreathe_C",
+          "factor": 2
+        }
+      },
+      "enabled": true,
+      "label": "If the optional PAO event is dropped, run the full in-suit prebreathe (60 min)",
+      "source": "the public-affairs event is the only droppable item; when it is cut, schedule margin lets prebreathe run its full 60 min protocol instead of the trimmed 30"
+    },
+    {
+      "type": "working_window",
+      "id": "w1",
+      "section": "HLS",
+      "open": "23:59",
+      "close": "00:00",
+      "days": [
+        0
+      ],
+      "enabled": true,
+      "label": "HLS docking phase not before Day 2",
+      "source": "HLS isn't reached until after the Day-1 Orion transit/burn, so the HLS section is closed on Day 1"
+    },
+    {
+      "type": "working_window",
+      "id": "w2",
+      "section": "xEVA",
+      "open": "23:59",
+      "close": "00:00",
+      "days": [
+        0,
+        1
+      ],
+      "enabled": true,
+      "label": "EVA phase only on Day 3",
+      "source": "the EVA is the Day-3 objective; the xEVA section is closed on Days 1-2 so suit-up and the EVA fall on Day 3"
+    },
+    {
+      "type": "precedence",
+      "id": "c30",
+      "before": "hls_ascent_prep_D",
+      "after": "hls_undock_D",
+      "enabled": true,
+      "label": "Ascent prep before undock",
+      "source": "ascent-engine checkout completes before separation/undock"
+    },
+    {
+      "type": "precedence",
+      "id": "c31",
+      "before": "eva_doff_C",
+      "after": "orion_rcs_B_2",
+      "enabled": true,
+      "label": "EVA complete before the pre-undock RCS check",
+      "source": "the Day-3 RCS re-check happens after the EVA is back inside, ahead of undock"
+    },
+    {
+      "type": "time_window",
+      "id": "c32",
+      "activity": "orion_burn_A",
+      "latest_end": "20:00",
+      "enabled": true,
+      "label": "Day-1 TCM burn completes within Day 1",
+      "source": "the trans-lunar correction burn is a fixed Day-1 maneuver; pinning it to Day 1 keeps the Orion transit chain on the first calendar day"
+    },
+    {
+      "type": "working_window",
+      "id": "ww_rest_A",
+      "section": "Rest A",
+      "open": "22:00",
+      "close": "06:00",
+      "days": "all",
+      "enabled": true,
+      "label": "Crew A sleeps at night (22:00-06:00)",
+      "source": "crew sleep is a protected nightly 8h block"
+    },
+    {
+      "type": "working_window",
+      "id": "ww_rest_B",
+      "section": "Rest B",
+      "open": "22:00",
+      "close": "06:00",
+      "days": "all",
+      "enabled": true,
+      "label": "Crew B sleeps at night (22:00-06:00)",
+      "source": "crew sleep is a protected nightly 8h block"
+    },
+    {
+      "type": "working_window",
+      "id": "ww_rest_C",
+      "section": "Rest C",
+      "open": "22:00",
+      "close": "06:00",
+      "days": "all",
+      "enabled": true,
+      "label": "Crew C sleeps at night (22:00-06:00)",
+      "source": "crew sleep is a protected nightly 8h block"
+    },
+    {
+      "type": "working_window",
+      "id": "ww_rest_D",
+      "section": "Rest D",
+      "open": "22:00",
+      "close": "06:00",
+      "days": "all",
+      "enabled": true,
+      "label": "Crew D sleeps at night (22:00-06:00)",
+      "source": "crew sleep is a protected nightly 8h block"
+    }
+  ],
+  "horizon": 4320
+}

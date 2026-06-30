@@ -52,17 +52,8 @@
 
           <div class="board-head">
             <h2>Constraints</h2>
-            <div class="add-constraint">
-              <select id="add-constraint-type" class="select select-sm" aria-label="New constraint type">
-                <option value="time_window">Time window</option>
-                <option value="precedence">Precedence</option>
-                <option value="no_overlap">No overlap</option>
-                <option value="conditional">Conditional</option>
-              </select>
-              <button type="button" id="add-constraint" class="btn btn-ghost btn-sm">+ Constraint</button>
-            </div>
           </div>
-          <div id="constraints"></div>
+          <button type="button" id="open-constraints" class="btn btn-ghost btn-sm lib-browse-btn">⚙ Manage constraints (0)</button>
         </section>
 
         <!-- CENTER: the timeline (the main view) -->
@@ -152,6 +143,47 @@
           <button type="button" id="inspector-close" class="modal-close" aria-label="Close inspector">×</button>
         </div>
         <div id="inspector" class="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Constraints list: all the plan's rules in one popup so the left panel doesn't grow forever. -->
+    <div id="constraints-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-constraints" role="dialog" aria-modal="true" aria-label="Constraints">
+        <div class="modal-head">
+          <h2 class="modal-title">Constraints</h2>
+          <input id="con-search" class="select modal-search" type="search" placeholder="Search constraints…" aria-label="Search constraints" />
+          <button type="button" id="add-constraint" class="btn btn-primary btn-sm">+ Constraint</button>
+          <button type="button" id="constraints-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div id="con-chips" class="lib-chips" role="group" aria-label="Filter by type"></div>
+        <div id="constraints" class="lib-cards"></div>
+        <div id="constraints-pager" class="lib-pager"></div>
+      </div>
+    </div>
+
+    <!-- Add constraint: a focused popup — pick a type, fill its fields, then Add. Reuses the modal shell. -->
+    <div id="constraint-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-narrow" role="dialog" aria-modal="true" aria-label="Add constraint">
+        <div class="modal-head">
+          <h2 class="modal-title" id="constraint-modal-title">Add constraint</h2>
+          <button type="button" id="constraint-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="field">
+            <span class="field-lbl">type</span>
+            <select id="add-constraint-type" class="select select-sm" aria-label="Constraint type">
+              <option value="time_window">Time window</option>
+              <option value="precedence">Precedence</option>
+              <option value="no_overlap">No overlap</option>
+              <option value="conditional">Conditional</option>
+            </select>
+          </label>
+          <div id="constraint-form"></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" id="constraint-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+          <button type="button" id="constraint-commit" class="btn btn-primary btn-sm">+ Add constraint</button>
+        </div>
       </div>
     </div>
 

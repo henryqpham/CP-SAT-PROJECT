@@ -37,14 +37,19 @@ const TYPES_KEY = "planner.types.v1";
 // Recently-added templates (labels, most-recent first) — a quick strip at the top of the Library.
 let recents = [];
 const RECENTS_KEY = "planner.recents.v1";
+// An occurrence id like "lunch#d2" maps back to its source activity "lunch" — recurs_daily expands
+// one activity into per-day occurrences, and the source carries the section/type/color.
+const sourceId = (id) => String(id).split("#")[0];
+const findActivity = (id) => scenario.activities.find((x) => x.id === sourceId(id));
 const colorFor = (id) => {
-  const a = scenario.activities.find((x) => x.id === id);
+  const a = findActivity(id);
   if (a && a.type && TYPES[a.type]) return TYPES[a.type].color;
   return "var(--bar)";
 };
 
 // ---- wiring -------------------------------------------------------------
 addConstraintType("sequence", "Sequence (ordered)");
+addConstraintType("working_window", "Working window (open hours)");
 
 $("parse-btn").onclick = () =>
   withBusy($("parse-btn"), "Parsing…", async () => {
@@ -119,6 +124,8 @@ $("roster-search").oninput = (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("library-modal").hidden) closeLibrary();
+  else if (!$("constraint-modal").hidden) closeAddConstraintModal();
+  else if (!$("constraints-modal").hidden) closeConstraintsList();
   else if (!$("inspector-modal").hidden) closeInspector();
 });
 
@@ -182,6 +189,9 @@ function solveNow() {
 let solveTimer = null;
 function scheduleSolve() {
   clearTimeout(solveTimer);
+  // Editing an Add-constraint draft (not yet in the plan): don't re-solve the live plan, and don't
+  // let an empty-plan draft edit fall through to clearResult() below and wipe the timeline.
+  if ($("constraint-modal") && !$("constraint-modal").hidden) return;
   // No activities to solve (e.g. you just deleted the last one). There's nothing to draw, so
   // clear the timeline + health instead of leaving the previous solve's bars on screen.
   if (!scenario.activities.length) {
@@ -206,10 +216,100 @@ function clearResult() {
   pill.className = "pill";
 }
 
-$("add-constraint").onclick = () => {
-  scenario.constraints.push(newConstraint($("add-constraint-type").value));
-  render();
+// "+ Constraint" opens a focused popup: pick a type, fill its fields, then Add. The draft lives
+// here until committed, so the constraint is fully configured BEFORE it joins the plan — no more
+// blank card appearing at the bottom of a long list.
+let draftConstraint = null;
+// When set, the add-constraint popup is in EDIT mode: committing REPLACES this constraint (by id)
+// instead of pushing a new one. Cleared whenever the popup closes.
+let editingConstraintId = null;
+$("add-constraint").onclick = () => openAddConstraintModal();
+$("constraint-commit").onclick = commitDraftConstraint;
+$("constraint-cancel").onclick = closeAddConstraintModal;
+$("constraint-close").onclick = closeAddConstraintModal;
+$("constraint-modal").onclick = (e) => { if (e.target === $("constraint-modal")) closeAddConstraintModal(); };
+// Changing the type reseeds the draft (keeping any label already typed) and rebuilds its fields.
+$("add-constraint-type").onchange = () => {
+  const label = draftConstraint ? draftConstraint.label : "";
+  draftConstraint = newConstraint($("add-constraint-type").value);
+  draftConstraint.label = label;
+  renderConstraintDraft();
 };
+
+// The Constraints LIST lives in its own popup so the left panel never grows with every rule.
+$("open-constraints").onclick = openConstraintsList;
+$("constraints-close").onclick = closeConstraintsList;
+$("constraints-modal").onclick = (e) => { if (e.target === $("constraints-modal")) closeConstraintsList(); };
+$("con-search").oninput = (e) => { conSearch = e.target.value; constraintsPage = 0; renderConstraints(); };
+function openConstraintsList() {
+  $("constraints-modal").hidden = false; // show first, so the grid has a measurable size
+  renderConstraints();
+}
+function closeConstraintsList() {
+  $("constraints-modal").hidden = true;
+}
+// Re-page when the window resizes (more/fewer cards fit), but only while the modal is open.
+window.addEventListener("resize", () => {
+  if (!$("constraints-modal").hidden) renderConstraints();
+});
+
+function openAddConstraintModal() {
+  editingConstraintId = null;
+  $("constraint-modal-title").textContent = "Add constraint";
+  $("constraint-commit").textContent = "+ Add constraint";
+  draftConstraint = newConstraint($("add-constraint-type").value);
+  renderConstraintDraft();
+  $("constraint-modal").hidden = false;
+  $("add-constraint-type").focus();
+}
+// EDIT an existing constraint in the same popup: load a copy as the draft, switch the popup into
+// edit mode (title + commit button), then commitDraftConstraint() replaces the original in place.
+function openEditConstraintModal(c) {
+  editingConstraintId = c.id;
+  draftConstraint = JSON.parse(JSON.stringify(c));
+  $("add-constraint-type").value = c.type;
+  $("constraint-modal-title").textContent = "Edit constraint";
+  $("constraint-commit").textContent = "Save";
+  renderConstraintDraft();
+  $("constraint-modal").hidden = false;
+}
+function closeAddConstraintModal() {
+  $("constraint-modal").hidden = true;
+  draftConstraint = null;
+  editingConstraintId = null;
+  $("constraint-modal-title").textContent = "Add constraint";
+  $("constraint-commit").textContent = "+ Add constraint";
+}
+// Build the modal body from the SAME field helpers the constraint cards use, so every type stays
+// in sync — a label field on top, then the type-specific fields.
+function renderConstraintDraft() {
+  const form = $("constraint-form");
+  if (!form) return;
+  form.innerHTML = "";
+  if (!draftConstraint) return;
+  form.append(labeledField("label", textInput(draftConstraint.label || "",
+    (v) => (draftConstraint.label = v), "constraint label")));
+  for (const f of constraintFields(draftConstraint)) form.append(f);
+  // A plan with no activities can't take a meaningful constraint (the refs would be empty and the
+  // solver silently drops them), so block committing one until there's something to constrain.
+  const commit = $("constraint-commit");
+  if (commit) commit.disabled = !scenario.activities.length;
+}
+function commitDraftConstraint() {
+  if (!draftConstraint) return;
+  if (editingConstraintId) {
+    // Edit mode: replace the original constraint in place (keep its id so refs/filters stay stable).
+    draftConstraint.id = editingConstraintId;
+    const i = scenario.constraints.findIndex((c) => c.id === editingConstraintId);
+    if (i >= 0) scenario.constraints[i] = draftConstraint;
+    else scenario.constraints.push(draftConstraint); // its row vanished — fall back to adding it
+  } else {
+    scenario.constraints.push(draftConstraint);
+  }
+  draftConstraint = null;
+  closeAddConstraintModal();
+  render();
+}
 
 // Ctrl/Cmd+Enter parses from the text box (the AI input is hidden for now, but still wired up).
 $("sentence").addEventListener("keydown", (e) => {
@@ -446,6 +546,8 @@ function newConstraint(type) {
       when: { activity: a0, present: false },
       then: { set_duration: { activity: a1, factor: 1 } },
     };
+  if (type === "working_window")
+    return { ...base, section: "all", open: "09:00", close: "17:00", days: "all" };
   return base;
 }
 
@@ -454,6 +556,8 @@ function render() {
   renderRoster();
   renderConstraints();
   renderInspector();
+  // Keep the open "Add constraint" draft in sync when a field change triggers a rebuild.
+  if (draftConstraint && $("constraint-modal") && !$("constraint-modal").hidden) renderConstraintDraft();
   scheduleSolve();
 }
 
@@ -508,34 +612,63 @@ function renderRoster() {
     return;
   }
 
+  // Group the displayed rows by section (preserving first-seen order), so the flat list reads as
+  // labelled, color-coded blocks instead of one long stripe. "Ungrouped" matches the convention used
+  // for the chips + filter above.
+  const groups = new Map();
   for (const a of rows) {
-    const row = document.createElement("div");
-    row.className = "roster-row" + (a.id === selectedId ? " selected" : "");
-    const sw = makeEl("span", "", "roster-swatch");
-    sw.style.background = colorFor(a.id);
-    row.append(sw);
-    row.append(makeEl("span", a.id, "roster-name"));
-    row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
-    const s = shownSchedule && shownSchedule.find((x) => x.id === a.id);
-    row.append(makeEl("span", s ? `${timeLabel(s.start)}–${timeLabel(s.end)}` : "—", "roster-time"));
-    // Same as the timeline bar: re-highlight + open the Inspector, never re-solve.
-    onActivate(row, () => {
-      selectedId = a.id;
-      drawTimeline(shownSchedule, shownStale);
-      renderInspector();
-      openInspector();
-    });
-    const x = deleteBtn((e) => {
-      e.stopPropagation(); // don't also select the row
-      const i = scenario.activities.findIndex((y) => y.id === a.id);
-      if (i >= 0) scenario.activities.splice(i, 1);
-      if (selectedId === a.id) selectedId = null;
-      render();
-    });
-    x.classList.add("roster-del");
-    row.append(x);
-    box.append(row);
+    const sec = (a.section && a.section.trim()) || "Ungrouped";
+    if (!groups.has(sec)) groups.set(sec, []);
+    groups.get(sec).push(a);
   }
+
+  for (const [sec, items] of groups) {
+    const group = makeEl("div", "", "roster-group");
+    // Accent hue derived from the section name (data-driven; no hardcoded section→color map).
+    group.style.setProperty("--group-hue", String(sectionHue(sec)));
+    const header = makeEl("div", "", "roster-group-head");
+    header.append(makeEl("span", sec, "roster-group-name"));
+    header.append(makeEl("span", String(items.length), "roster-group-count"));
+    group.append(header);
+
+    for (const a of items) {
+      const row = document.createElement("div");
+      row.className = "roster-row" + (a.id === selectedId ? " selected" : "");
+      const sw = makeEl("span", "", "roster-swatch");
+      sw.style.background = colorFor(a.id);
+      row.append(sw);
+      row.append(makeEl("span", a.id, "roster-name"));
+      row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
+      const s = shownSchedule && shownSchedule.find((x) => sourceId(x.id) === a.id);
+      row.append(makeEl("span", s ? `${timeLabel(s.start)}–${timeLabel(s.end)}` : "—", "roster-time"));
+      // Same as the timeline bar: re-highlight + open the Inspector, never re-solve.
+      onActivate(row, () => {
+        selectedId = a.id;
+        drawTimeline(shownSchedule, shownStale);
+        renderInspector();
+        openInspector();
+      });
+      const x = deleteBtn((e) => {
+        e.stopPropagation(); // don't also select the row
+        const i = scenario.activities.findIndex((y) => y.id === a.id);
+        if (i >= 0) scenario.activities.splice(i, 1);
+        if (selectedId === a.id) selectedId = null;
+        render();
+      });
+      x.classList.add("roster-del");
+      row.append(x);
+      group.append(row);
+    }
+    box.append(group);
+  }
+}
+
+// Map a section name to a stable hue (0–359) via a small string hash, so each group gets a distinct
+// accent without hardcoding any section→color map or palette (see CLAUDE.md "no hardcoded content").
+function sectionHue(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
 }
 
 // One section filter chip for the roster (label + count; click to set or clear the filter).
@@ -1057,7 +1190,7 @@ function renderInspector() {
   box.append(selectField("type", act.type || "", typeOpts, (v) => (act.type = v || null)));
 
   // Optional read-only solved start–end from the schedule currently drawn.
-  const solved = shownSchedule && shownSchedule.find((s) => s.id === act.id);
+  const solved = shownSchedule && shownSchedule.find((s) => sourceId(s.id) === act.id);
   if (solved) box.append(makeEl("div", `Scheduled ${timeLabel(solved.start)}–${timeLabel(solved.end)}`, "insp-solved"));
 
   const del = deleteBtn(() => {
@@ -1079,36 +1212,185 @@ function labeledField(label, inputEl) {
   return wrap;
 }
 
+// Constraints manager state: a search box, a multi-select TYPE filter, and the current card page.
+let conSearch = "";
+let conTypes = new Set();
+let constraintsPage = 0; // 0-based page in the constraint card grid
+
+// How many cards fit the visible grid right now, so a page FILLS the area before paginating.
+// Measures the grid box (it's flex:1, so its size = the available area). Falls back when the modal
+// isn't visible yet (hidden -> 0 height). Card cell ~ 200px wide (minmax 190 + gap), ~112px tall.
+function conPageSize() {
+  const box = $("constraints");
+  const w = box ? box.clientWidth : 0;
+  const h = box ? box.clientHeight : 0;
+  if (!w || !h) return 60; // not measurable (modal hidden) — generous fallback
+  const cols = Math.max(1, Math.floor((w + 10) / 200));
+  const rows = Math.max(1, Math.floor((h + 10) / 112));
+  return cols * rows;
+}
+
+const CON_TYPE_LABEL = {
+  time_window: "Time window", no_overlap: "No overlap", precedence: "Precedence",
+  sequence: "Sequence", conditional: "Conditional", working_window: "Working window",
+};
+function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
+// Type -> tint color (a CSS var string), used as the card's --cat border/wash. Mirrors the old
+// con-dot colors so each type reads the same as in the rest of the UI.
+const CON_TYPE_COLOR = {
+  time_window: "var(--accent)", working_window: "var(--accent)", precedence: "var(--ok)",
+  sequence: "var(--warn)", conditional: "var(--violet)", no_overlap: "var(--muted)",
+};
+function constraintTypeColor(t) { return CON_TYPE_COLOR[t] || "var(--muted)"; }
+
+// One-line summary shown on a collapsed row, so 200 constraints are scannable without expanding.
+function constraintSummary(c) {
+  if (c.type === "time_window") {
+    const w = [c.earliest && "≥ " + c.earliest, c.latest_end && "≤ " + c.latest_end].filter(Boolean).join(", ");
+    return (c.activity || "—") + (w ? " · " + w : "");
+  }
+  if (c.type === "no_overlap") {
+    return "no overlap · " + (c.activities === "all" || c.activities == null ? "all activities" : (c.activities.length + " activities"));
+  }
+  if (c.type === "precedence") return (c.before || "—") + " → " + (c.after || "—");
+  if (c.type === "sequence") return (c.activities || []).join(" → ") || "—";
+  if (c.type === "conditional") {
+    const w = (c.when || {}).activity, t = ((c.then || {}).set_duration || {}).activity;
+    return "when " + (w || "—") + " → then " + (t || "—");
+  }
+  if (c.type === "working_window") {
+    return (c.section || "all") + " · " + c.open + "–" + c.close + " · " + (c.days === "all" ? "every day" : "days " + (c.days || []).join(","));
+  }
+  return c.type;
+}
+
+// One TYPE filter chip (All + one per type, with counts). Reuses the .lib-chip styling.
+function conChip(value, label, count, active) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "lib-chip" + (active ? " active" : "");
+  chip.append(makeEl("span", label, "lib-chip-label"));
+  chip.append(makeEl("span", String(count), "lib-chip-count"));
+  chip.onclick = () => {
+    if (value === "") conTypes.clear();
+    else if (conTypes.has(value)) conTypes.delete(value);
+    else conTypes.add(value);
+    constraintsPage = 0; // a filter change jumps back to page 1
+    renderConstraints();
+  };
+  return chip;
+}
+
+// Build one constraint CARD, reusing the library card styling (tinted by the type color via --cat):
+// title (label), a type·summary meta line, and a footer with enable, Edit, and delete. Editing
+// happens in the add-constraint popup (EDIT mode) — the card itself isn't inline-editable anymore.
+function conCardEl(c) {
+  const card = document.createElement("div");
+  card.className = "lib-card con-card" + (c.enabled === false ? " off" : "");
+  card.style.setProperty("--cat", constraintTypeColor(c.type));
+
+  card.append(makeEl("div", c.label || constraintTypeLabel(c.type), "lib-card-name"));
+  card.append(makeEl("div", constraintTypeLabel(c.type) + " · " + constraintSummary(c), "lib-card-meta"));
+
+  const foot = makeEl("div", "", "lib-card-foot");
+  // Enable toggle: flips c.enabled + re-solves, but must NOT open the editor.
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = c.enabled !== false;
+  cb.title = "Enabled";
+  cb.setAttribute("aria-label", "enabled");
+  cb.onchange = () => { c.enabled = cb.checked; card.classList.toggle("off", !cb.checked); scheduleSolve(); };
+  foot.append(cb);
+
+  const edit = makeEl("button", "Edit", "btn btn-sm con-card-edit");
+  edit.type = "button";
+  edit.onclick = (e) => { e.stopPropagation(); openEditConstraintModal(c); };
+  foot.append(edit);
+
+  const del = deleteBtn((e) => {
+    e.stopPropagation();
+    const i = scenario.constraints.indexOf(c);
+    if (i >= 0) scenario.constraints.splice(i, 1);
+    render();
+  });
+  foot.append(del);
+
+  card.append(foot);
+  return card;
+}
+
+// The constraints list as a paginated CARD GRID (same look as the Library): filtered by search +
+// type chips, one card per rule, edited in the add-constraint popup. Scales to hundreds.
 function renderConstraints() {
   const box = $("constraints");
+  if (!box) return;
   box.innerHTML = "";
-  scenario.constraints.forEach((c, i) => {
-    const el = cardShell("constraint" + (c.enabled === false ? " off" : ""));
-    const head = document.createElement("div");
-    head.className = "card-head";
+  const cons = scenario.constraints;
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = c.enabled !== false;
-    cb.setAttribute("aria-label", "enabled");
-    cb.onchange = () => {
-      c.enabled = cb.checked;
-      el.classList.toggle("off", !cb.checked);
-      scheduleSolve();
-    };
-    head.append(cb);
-    head.append(badge(c.type));
-    head.append(textInput(c.label || "", (v) => (c.label = v), "label", "card-title"));
-    head.append(deleteBtn(() => {
-      scenario.constraints.splice(i, 1);
-      render();
-    }));
-    el.append(head);
+  // Type filter chips (only when there's more than one type to choose between).
+  const chipBox = $("con-chips");
+  if (chipBox) {
+    chipBox.innerHTML = "";
+    const counts = {};
+    for (const c of cons) counts[c.type] = (counts[c.type] || 0) + 1;
+    const types = Object.keys(counts).sort();
+    if (types.length > 1) {
+      chipBox.append(conChip("", "All", cons.length, !conTypes.size));
+      for (const t of types) chipBox.append(conChip(t, constraintTypeLabel(t), counts[t], conTypes.has(t)));
+    }
+  }
 
-    for (const f of constraintFields(c)) el.append(f);
-    if (c.source) el.append(makeEl("small", "“" + c.source + "”"));
-    box.append(el);
+  // Filter by the type chips + the search text (label / type / summary).
+  const q = conSearch.trim().toLowerCase();
+  const rows = cons.filter((c) => {
+    if (conTypes.size && !conTypes.has(c.type)) return false;
+    if (!q) return true;
+    return (c.label || "").toLowerCase().includes(q)
+      || c.type.includes(q)
+      || constraintSummary(c).toLowerCase().includes(q);
   });
+
+  const pager = $("constraints-pager");
+  if (pager) pager.innerHTML = "";
+
+  if (!cons.length) box.append(makeEl("p", "No constraints yet — use “+ Constraint” to add one.", "hint"));
+  else if (!rows.length) box.append(makeEl("p", "No constraints match this filter.", "hint"));
+  else {
+    // Fit as many cards as the grid area holds, then paginate. Clamp the page if a filter shrank
+    // the result set.
+    const pageSize = conPageSize();
+    const pageCount = Math.ceil(rows.length / pageSize);
+    if (constraintsPage >= pageCount) constraintsPage = pageCount - 1;
+    if (constraintsPage < 0) constraintsPage = 0;
+    const pageRows = rows.slice(constraintsPage * pageSize, constraintsPage * pageSize + pageSize);
+    const frag = document.createDocumentFragment();
+    for (const c of pageRows) frag.append(conCardEl(c));
+    box.append(frag);
+    renderConstraintsPager(pageCount);
+  }
+
+  const btn = $("open-constraints");
+  if (btn) btn.textContent = `⚙ Manage constraints (${cons.length})`;
+}
+
+// Numbered pager for the constraint cards — mirrors renderLibraryPager, reusing pageWindow() + the
+// .lib-pager / .lib-page styling. Renders nothing when there's only one page.
+function renderConstraintsPager(pageCount) {
+  const box = $("constraints-pager");
+  if (!box || pageCount <= 1) return;
+  const pageBtn = (label, page, opts = {}) => {
+    const b = makeEl("button", label, "lib-page" + (opts.active ? " active" : ""));
+    b.type = "button";
+    if (opts.disabled) b.disabled = true;
+    else b.onclick = () => { constraintsPage = page; renderConstraints(); };
+    return b;
+  };
+  box.append(pageBtn("‹ Prev", constraintsPage - 1, { disabled: constraintsPage <= 0 }));
+  for (const p of pageWindow(constraintsPage, pageCount)) {
+    if (p === "…") box.append(makeEl("span", "…", "lib-page-gap"));
+    else box.append(pageBtn(String(p + 1), p, { active: p === constraintsPage }));
+  }
+  box.append(pageBtn("Next ›", constraintsPage + 1, { disabled: constraintsPage >= pageCount - 1 }));
 }
 
 function constraintFields(c) {
@@ -1146,6 +1428,17 @@ function constraintFields(c) {
     ], (v) => (when.present = v === "true")));
     f.push(activitySelect("then scale", sd.activity, (v) => (sd.activity = v)));
     f.push(numField("× factor", sd.factor, (v) => (sd.factor = v)));
+  } else if (c.type === "working_window") {
+    // Target: "All" or one of the sections currently in the plan.
+    const secs = [...new Set(
+      scenario.activities.map((a) => a.section && a.section.trim()).filter(Boolean)
+    )];
+    f.push(selectField("applies to", c.section || "all", [
+      { value: "all", label: "All activities" },
+      ...secs.map((s) => ({ value: s, label: "Section: " + s })),
+    ], (v) => { c.section = v; render(); }));
+    f.push(textField("open (HH:MM)", c.open || "", (v) => (c.open = v)));
+    f.push(textField("close (HH:MM)", c.close || "", (v) => (c.close = v)));
   }
   return f;
 }
@@ -1231,8 +1524,11 @@ function applyZoomTo(g) {
   g.classList.toggle("gantt-zoomed", zoomX > 1.001); // pin the row labels only once it scrolls
 }
 // Re-apply zoom to the timeline already on screen (called live while dragging the sliders).
+// Resizes the chart AND re-steps the axis ticks so the increments adjust to the new zoom.
 function applyZoom() {
-  applyZoomTo($("timeline").querySelector(".gantt"));
+  const g = $("timeline").querySelector(".gantt");
+  applyZoomTo(g);
+  renderAxisTicks(g);
 }
 
 // A small legend of the activity types currently in use (color swatch -> label).
@@ -1273,11 +1569,6 @@ function setView(isOverview) {
 // also a real solver bound (see solvePayload); a sub-day horizon is only this cosmetic budget.
 function planHorizon() {
   if (scenario.horizon && scenario.horizon > 0) return scenario.horizon;
-  if (scenario.day) {
-    const s = toMin(scenario.day.start);
-    const e = toMin(scenario.day.end);
-    if (s != null && e != null && e > s) return e - s;
-  }
   return DAY;
 }
 
@@ -1341,10 +1632,50 @@ function renderHealth(status, schedule, stale) {
   }
 }
 
+// The current view's axis range + mode, so renderAxisTicks can rebuild the tick marks on zoom.
+let axisCtx = null;
+
 // Draw the timeline. A single-day plan keeps the original axis-fitted view; once the solved
 // horizon spans more than a day we switch to a multi-day view (one continuous axis, day markers).
 function buildGantt(schedule) {
   return solvedHorizon > DAY ? buildGanttMulti(schedule) : buildGanttDay(schedule);
+}
+
+// Shade the CLOSED hours of every enabled working_window behind the activity lanes, repeated per
+// day across [lo, hi). Reads live scenario.constraints (so bands still show over a dimmed
+// last-good schedule on INFEASIBLE). A band's lane is matched by the activity id in its label.
+function shadeClosedLanes(g, pct, lo, hi) {
+  const windows = scenario.constraints.filter(
+    (c) => c.enabled !== false && c.type === "working_window"
+  );
+  if (!windows.length) return;
+  const sectionOf = (id) => {
+    const a = findActivity(id);
+    return (a && a.section && a.section.trim()) || "Ungrouped";
+  };
+  for (const row of g.querySelectorAll(".gantt-activity")) {
+    const id = row.querySelector(".gantt-label")?.title;
+    const track = row.querySelector(".gantt-track.lane");
+    if (!id || !track) continue;
+    const sec = sectionOf(id);
+    for (const w of windows) {
+      if (w.section !== "all" && w.section !== sec) continue;
+      const o = toMin(w.open), cl = toMin(w.close);
+      if (o == null || cl == null || o === cl) continue;
+      const gaps = o < cl ? [[0, o], [cl, DAY]] : [[cl, o]];
+      for (let day0 = 0; day0 < hi; day0 += DAY) {
+        for (const [g0, g1] of gaps) {
+          const s = Math.max(lo, day0 + g0), e = Math.min(hi, day0 + g1);
+          if (e <= s) continue;
+          const band = document.createElement("div");
+          band.className = "closed-band";
+          band.style.left = pct(s) + "%";
+          band.style.width = (pct(e) - pct(s)) + "%";
+          track.prepend(band); // under the bars (prepended like day-gridlines)
+        }
+      }
+    }
+  }
 }
 
 function buildGanttDay(schedule) {
@@ -1362,24 +1693,19 @@ function buildGanttDay(schedule) {
   const span = t1 - t0;
   const pct = (min) => (100 * (min - t0)) / span;
 
-  // Time axis: ~6 "nice"-stepped ticks across the fitted window.
+  // Time axis: zoom-aware "nice"-stepped ticks. Built empty here; renderAxisTicks fills it and
+  // refills it on every zoom change, so the increments get finer zoomed in and coarser zoomed out.
   const axis = document.createElement("div");
   axis.className = "gantt-row gantt-axis";
   axis.append(makeEl("div", "", "gantt-label"));
   const axisTrack = document.createElement("div");
   axisTrack.className = "gantt-track";
-  const step = niceStep(span);
-  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
-    const tick = makeEl("span", hhmm(t), "tick-label");
-    tick.style.left = pct(t) + "%";
-    axisTrack.append(tick);
-  }
   axis.append(axisTrack);
   g.append(axis);
 
   // Group activities into section swimlanes (OPEN by default; click a header to collapse).
   const sectionOf = (id) => {
-    const a = scenario.activities.find((x) => x.id === id);
+    const a = findActivity(id);
     return (a && a.section && a.section.trim()) || "Ungrouped";
   };
   const groups = new Map();
@@ -1397,6 +1723,9 @@ function buildGanttDay(schedule) {
       [...items].sort((a, b) => a.start - b.start).forEach((item) => g.append(activityRow(item, pct)));
     }
   }
+  shadeClosedLanes(g, pct, t0, t1);
+  axisCtx = { t0, span, mode: "day" };
+  renderAxisTicks(g);
   return g;
 }
 
@@ -1417,20 +1746,14 @@ function buildGanttMulti(schedule) {
   axis.append(makeEl("div", "", "gantt-label"));
   const axisTrack = document.createElement("div");
   axisTrack.className = "gantt-track";
-  // One "Day N" label per day, thinned so labels never crowd on a long horizon (the per-day
-  // gridlines below still mark every day).
-  const dayStep = Math.max(1, Math.ceil(totalDays / 8));
-  for (let d = 0; d < totalDays; d += dayStep) {
-    const tick = makeEl("span", "Day " + (d + 1), "tick-label");
-    tick.style.left = pct(d * DAY) + "%";
-    axisTrack.append(tick);
-  }
+  // Built empty here; renderAxisTicks fills it with a zoom-aware mix of "Day N" boundaries and
+  // clock-time (HH:MM) ticks in between (the per-day gridlines below still mark every day).
   axis.append(axisTrack);
   g.append(axis);
 
   // Group into section swimlanes (same as the single-day view).
   const sectionOf = (id) => {
-    const a = scenario.activities.find((x) => x.id === id);
+    const a = findActivity(id);
     return (a && a.section && a.section.trim()) || "Ungrouped";
   };
   const groups = new Map();
@@ -1459,6 +1782,9 @@ function buildGanttMulti(schedule) {
       track.prepend(line);
     }
   }
+  shadeClosedLanes(g, pct, 0, horizon);
+  axisCtx = { t0: 0, span: horizon, mode: "multi", totalDays };
+  renderAxisTicks(g);
   return g;
 }
 
@@ -1509,7 +1835,7 @@ function activityRow(item, pct) {
   const track = document.createElement("div");
   track.className = "gantt-track lane";
   const bar = document.createElement("div");
-  bar.className = "bar" + (item.id === selectedId ? " selected" : "");
+  bar.className = "bar" + (sourceId(item.id) === selectedId ? " selected" : "");
   bar.dataset.id = item.id;
   bar.style.left = pct(item.start) + "%";
   bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
@@ -1519,7 +1845,7 @@ function activityRow(item, pct) {
   // Select this activity: re-highlight + open the Inspector from the schedule on hand.
   // Nothing in the scenario changed, so we redraw + refresh — never re-solve.
   onActivate(bar, () => {
-    selectedId = item.id;
+    selectedId = sourceId(item.id);
     drawTimeline(shownSchedule, shownStale);
     renderInspector();
     openInspector();
@@ -1529,12 +1855,55 @@ function activityRow(item, pct) {
   return row;
 }
 
-// Pick a round tick spacing (in minutes) so the axis shows about 6 labels across `span`.
-function niceStep(span) {
-  const target = span / 6;
+// Pick a round tick spacing (in minutes) so the single-day axis shows ~6 labels per panel-width.
+// Zooming in (zoom > 1) widens the chart, so we aim for more labels -> finer increments.
+function niceStep(span, zoom = 1) {
+  const target = span / (6 * zoom);
   // Round step sizes we allow, smallest first; use the first one big enough.
-  for (const s of [15, 30, 60, 120, 180, 240, 360, 720]) if (s >= target) return s;
+  for (const s of [5, 10, 15, 30, 60, 120, 180, 240, 360, 720]) if (s >= target) return s;
   return 1440;
+}
+
+// Like niceStep but for the multi-day axis: steps run from sub-day hours (zoomed in) up to whole
+// days / several days (zoomed out or a long horizon), so the markers never crowd.
+function niceStepMulti(span, zoom = 1) {
+  const target = span / (8 * zoom);
+  for (const s of [60, 120, 180, 240, 360, 720, DAY, 2 * DAY, 3 * DAY, 7 * DAY, 14 * DAY])
+    if (s >= target) return s;
+  return Math.ceil(target / DAY) * DAY; // very long horizon: round up to whole days
+}
+
+// (Re)draw the time-axis tick labels for gantt `g`, sized to the current zoom. Called once at build
+// time and again on every zoom change (applyZoom), so the increments adapt live. Reads axisCtx,
+// which the builders set with the view's mode + range.
+function renderAxisTicks(g) {
+  if (!g || !axisCtx) return;
+  const axisTrack = g.querySelector(".gantt-axis .gantt-track");
+  if (!axisTrack) return;
+  axisTrack.querySelectorAll(".tick-label").forEach((el) => el.remove());
+  const { t0, span, mode, totalDays } = axisCtx;
+  const pct = (min) => (100 * (min - t0)) / span;
+  if (mode === "multi") {
+    // One continuous axis across the whole horizon: a bold "Day N" at each day boundary, with
+    // clock-time (HH:MM) ticks in between. Zoom in -> hour-level marks; zoom out -> day boundaries.
+    const step = niceStepMulti(span, zoomX);
+    for (let t = 0; t <= span + 0.5; t += step) {
+      const onDay = t % DAY === 0;
+      const dayIdx = Math.round(t / DAY);
+      if (onDay && dayIdx >= totalDays) continue; // skip the boundary at the horizon's far edge
+      const txt = onDay ? "Day " + (dayIdx + 1) : hhmm(t % DAY);
+      const tick = makeEl("span", txt, "tick-label" + (onDay ? " tick-day" : ""));
+      tick.style.left = pct(t) + "%";
+      axisTrack.append(tick);
+    }
+  } else {
+    const step = niceStep(span, zoomX);
+    for (let t = Math.ceil(t0 / step) * step; t <= t0 + span + 0.5; t += step) {
+      const tick = makeEl("span", hhmm(t), "tick-label");
+      tick.style.left = pct(t) + "%";
+      axisTrack.append(tick);
+    }
+  }
 }
 
 function hhmm(min) {
@@ -1606,9 +1975,6 @@ function cardShell(cls) {
   el.className = "card " + cls;
   return el;
 }
-function badge(type) {
-  return makeEl("span", type, "badge badge-" + type);
-}
 function deleteBtn(onClick) {
   const b = document.createElement("button");
   b.className = "del";
@@ -1656,6 +2022,15 @@ function activitySelect(label, value, onChange) {
   wrap.append(makeEl("span", label, "field-lbl"));
   const sel = document.createElement("select");
   const ids = scenario.activities.map((a) => a.id);
+  if (!ids.length) {
+    // No activities to pick from (e.g. building a constraint on an empty plan) — show a hint
+    // instead of a blank, un-fillable dropdown.
+    const opt = document.createElement("option");
+    opt.textContent = "— no activities —";
+    opt.disabled = true;
+    opt.selected = true;
+    sel.append(opt);
+  }
   if (value && !ids.includes(value)) {
     const opt = document.createElement("option");
     opt.value = value;

@@ -18,11 +18,39 @@ def solve(scenario: Scenario) -> dict:
     model = cp_model.CpModel()
 
     # The planning window in minutes. With no horizon set it's one 24h day, so a
-    # plain scenario solves exactly as before (single-day). A bigger horizon lets
-    # the solver spread activities across multiple days (e.g. 2880 = 2 days).
+    # plain scenario solves exactly as before. A bigger horizon just widens the
+    # window the activities can sit in (e.g. 2880 = 2 days); they still pack
+    # compactly toward the start.
     horizon = scenario.horizon or DAY
 
-    base_duration = {a.id: a.duration for a in scenario.activities}
+    n_days = max(1, horizon // DAY)
+
+    # Expand recurring activities into one OCCURRENCE per applicable day. A normal activity is a
+    # single occurrence free across the whole horizon; a `recurs_daily` activity becomes one
+    # occurrence per day, each clamped to its day's window — so "lunch" lands once on EVERY day with
+    # no precedence wiring (the per-day spread is structural). Constraints that name a recurring
+    # activity by id are skipped (its id isn't a key here; only its per-day occurrences are).
+    def _day_bounds(a, d):
+        o = _to_minutes(a.daily_window.open) if a.daily_window else 0
+        cl = _to_minutes(a.daily_window.close) if a.daily_window else DAY
+        return d * DAY + o, min(horizon, d * DAY + cl)
+
+    occurrences = []  # each: {id, src, duration, section, lo, hi}
+    for a in scenario.activities:
+        if a.recurs_daily:
+            for d in range(n_days):
+                if a.days != "all" and d not in a.days:
+                    continue
+                lo, hi = _day_bounds(a, d)
+                if hi - lo >= a.duration:  # skip a day whose window can't hold the activity
+                    occurrences.append({"id": f"{a.id}#d{d + 1}", "src": a.id,
+                                        "duration": a.duration, "section": a.section,
+                                        "lo": lo, "hi": hi})
+        else:
+            occurrences.append({"id": a.id, "src": a.id, "duration": a.duration,
+                                "section": a.section, "lo": 0, "hi": horizon})
+
+    base_duration = {o["id"]: o["duration"] for o in occurrences}
 
     # Look through the conditionals once to find two things:
     #   - which activities are OPTIONAL (named in a conditional's "when"), and
@@ -66,33 +94,31 @@ def solve(scenario: Scenario) -> dict:
     intervals = {}
     presence = {}  # activity_id -> presence BoolVar (only for optional activities)
 
-    for a in scenario.activities:
-        aid = a.id
-        # Each activity lives somewhere in the planning window. A per-activity
-        # time_window (below) can only tighten this further.
-        starts[aid] = model.new_int_var(0, horizon, f"start_{aid}")
-        ends[aid] = model.new_int_var(0, horizon, f"end_{aid}")
+    for occ in occurrences:
+        oid = occ["id"]
+        lo, hi = occ["lo"], occ["hi"]
+        # Each occurrence lives in [lo, hi]: the whole horizon for a normal activity, or just its
+        # day's window for a recurring one (which is what keeps day-2's lunch off day 1).
+        starts[oid] = model.new_int_var(lo, hi, f"start_{oid}")
+        ends[oid] = model.new_int_var(lo, hi, f"end_{oid}")
 
-        is_optional = aid in optional_ids
-        rule = duration_rules.get(aid)
+        is_optional = oid in optional_ids
+        rule = duration_rules.get(oid)
 
         if rule is not None:
             # Variable-size interval: size depends on the trigger's presence.
-            base = base_duration[aid]
+            base = base_duration[oid]
             scaled = int(base * rule["factor"])  # CP-SAT needs whole numbers, so round to an int
-            lo, hi = sorted((base, scaled))
-            size = model.new_int_var(lo, hi, f"size_{aid}")
+            slo, shi = sorted((base, scaled))
+            size = model.new_int_var(slo, shi, f"size_{oid}")
 
             trigger_present = presence.get(rule["trigger"])
             if trigger_present is None:
-                # Trigger's presence var may not exist yet; create it now so we
-                # can reference it. (Activities are added in order, but the rule
-                # may point forward.)
+                # Trigger's presence var may not exist yet; create it now so we can reference it.
                 trigger_present = model.new_bool_var(f"present_{rule['trigger']}")
                 presence[rule["trigger"]] = trigger_present
 
-            # Use the scaled length in the branch the rule asked for, and the
-            # normal length in the other branch.
+            # Use the scaled length in the branch the rule asked for, the normal length otherwise.
             if rule["apply_when_present"]:
                 model.add(size == scaled).only_enforce_if(trigger_present)
                 model.add(size == base).only_enforce_if(trigger_present.Not())
@@ -100,30 +126,28 @@ def solve(scenario: Scenario) -> dict:
                 model.add(size == scaled).only_enforce_if(trigger_present.Not())
                 model.add(size == base).only_enforce_if(trigger_present)
 
-            interval = model.new_interval_var(
-                starts[aid], size, ends[aid], f"iv_{aid}"
-            )
+            interval = model.new_interval_var(starts[oid], size, ends[oid], f"iv_{oid}")
         elif is_optional:
-            present = presence.get(aid)
+            present = presence.get(oid)
             if present is None:
-                present = model.new_bool_var(f"present_{aid}")
-                presence[aid] = present
+                present = model.new_bool_var(f"present_{oid}")
+                presence[oid] = present
             interval = model.new_optional_interval_var(
-                starts[aid], base_duration[aid], ends[aid], present, f"iv_{aid}"
+                starts[oid], base_duration[oid], ends[oid], present, f"iv_{oid}"
             )
         else:
             interval = model.new_interval_var(
-                starts[aid], base_duration[aid], ends[aid], f"iv_{aid}"
+                starts[oid], base_duration[oid], ends[oid], f"iv_{oid}"
             )
 
-        intervals[aid] = interval
+        intervals[oid] = interval
 
-    # Sections are one-at-a-time resources: every activity sharing a (non-empty)
-    # section can't overlap any other in that same section.
+    # Sections are one-at-a-time resources: every OCCURRENCE sharing a (non-empty) section can't
+    # overlap any other in that same section.
     sections = {}
-    for a in scenario.activities:
-        if a.section:
-            sections.setdefault(a.section, []).append(intervals[a.id])
+    for occ in occurrences:
+        if occ["section"]:
+            sections.setdefault(occ["section"], []).append(intervals[occ["id"]])
     for ivs in sections.values():
         if len(ivs) >= 2:
             model.add_no_overlap(ivs)
@@ -158,14 +182,19 @@ def solve(scenario: Scenario) -> dict:
         # Make the activities sit close together (the block stays compact but can
         # float). With no fixed day start, minimizing the finish instead would
         # drift the activities into the empty early-morning hours.
-        tidy = max_end - min_start
-        if presence:
-            # Keeping an activity should always be worth more than any layout
-            # improvement, so the solver never drops an activity just to tidy
-            # the schedule. We give each kept activity a big reward (bigger than
-            # the whole range tidy can span, which is at most the horizon) so
-            # keeping always wins.
-            model.maximize((2 * horizon + 1) * sum(presence.values()) - tidy)
+        tidy = max_end - min_start  # the span of the scheduled block
+        # Keeping an activity must always beat any layout gain, so the solver never drops one to
+        # tidy up: each kept activity is worth more than the whole span can ever be.
+        keep = (2 * horizon + 1) * sum(presence.values()) if presence else 0
+        # On a MULTI-DAY plan we DON'T minimize the span: that's exactly what pulls every free task
+        # to the front ("everything piles on day 1"), and with recurring occurrences day-clamped it
+        # would crush each day toward the centre. Recurrence + working_window do the placing here.
+        # The single-day base keeps the compacting term, where a tight block is what you want.
+        if n_days > 1:
+            if presence:
+                model.maximize(keep)
+        elif presence:
+            model.maximize(keep - tidy)
         else:
             model.minimize(tidy)
 
@@ -188,6 +217,43 @@ def solve(scenario: Scenario) -> dict:
                 model.add(starts[c.activity] >= _to_minutes(c.earliest))
             if c.latest_end is not None:
                 model.add(ends[c.activity] <= _to_minutes(c.latest_end))
+
+        elif c.type == "working_window":
+            # A working window's CLOSED complement is forbidden time. Build fixed "closed"
+            # intervals per day across the horizon and forbid the governed activities from
+            # overlapping them. open/close are a DAILY clock (0..DAY) so the window repeats
+            # each day — the per-day mechanism time_window (day-1 absolute) doesn't have.
+            o, cl = _to_minutes(c.open), _to_minutes(c.close)
+            if o == cl:
+                gaps = []                     # open all day -> nothing closed
+            elif o < cl:
+                gaps = [(0, o), (cl, DAY)]    # same-day: closed before open and after close
+            else:
+                gaps = [(cl, o)]              # overnight wrap: one closed block between close and open
+
+            target_ivs = [
+                intervals[o["id"]] for o in occurrences
+                if c.section == "all" or o["section"] == c.section
+            ]
+            if target_ivs and gaps:
+                closed_ivs = []
+                for day0 in range(0, horizon, DAY):
+                    d = day0 // DAY
+                    if c.days != "all" and d not in c.days:
+                        continue  # window doesn't apply this day -> day stays fully open
+                    for g0, g1 in gaps:
+                        s = max(0, day0 + g0)
+                        e = min(horizon, day0 + g1)
+                        if e > s:
+                            closed_ivs.append(
+                                model.new_interval_var(s, e - s, e, f"closed_{c.id}_{d}_{g0}")
+                            )
+                # No governed activity may overlap any closed block. One no_overlap per activity
+                # (activity + the shared closed set) forbids straddling for free; it's the exact
+                # fixed-interval shape a future "blocker" feature reuses.
+                if closed_ivs:
+                    for iv in target_ivs:
+                        model.add_no_overlap([iv] + closed_ivs)
 
         elif c.type == "no_overlap":
             if c.activities == "all":
@@ -213,18 +279,18 @@ def solve(scenario: Scenario) -> dict:
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         schedule = []
-        for a in scenario.activities:
-            aid = a.id
-            # Skip optional activities the solver chose to drop; their
-            # start/end values are meaningless when absent.
-            present_var = presence.get(aid)
+        for occ in occurrences:
+            oid = occ["id"]
+            # Skip optional occurrences the solver dropped; their start/end are meaningless.
+            present_var = presence.get(oid)
             if present_var is not None and not solver.boolean_value(present_var):
                 continue
             schedule.append(
                 {
-                    "id": aid,
-                    "start": solver.value(starts[aid]),
-                    "end": solver.value(ends[aid]),
+                    "id": oid,
+                    "start": solver.value(starts[oid]),
+                    "end": solver.value(ends[oid]),
+                    "source": occ["src"],
                 }
             )
         return {"status": "OPTIMAL", "schedule": schedule, "horizon": horizon}

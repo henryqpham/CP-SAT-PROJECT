@@ -19,10 +19,43 @@ def _validate_hhmm(v: Optional[str]) -> Optional[str]:
     return v
 
 
+class DailyWindow(BaseModel):
+    # A per-day [open, close] clock (relative to each day's start) for a recurring activity's
+    # occurrences. Same-day only — for an overnight rhythm, use a section + working_window instead.
+    open: str = "00:00"
+    close: str = "24:00"
+
+    _check_times = field_validator("open", "close")(_validate_hhmm)
+
+    @model_validator(mode="after")
+    def _check_order(self):
+        # Zero-padded "HH:MM" compares lexically the same as by time, so this is a real ordering
+        # check. Reject overnight (open >= close) loudly instead of silently dropping every
+        # occurrence (an inverted window can never hold the activity, so it'd just vanish).
+        if self.open >= self.close:
+            raise ValueError("daily_window open must be before close (same-day window only)")
+        return self
+
+
 class Activity(BaseModel):
     id: str
     duration: int  # minutes
     section: Optional[str] = None  # free-text group; same section = one at a time
+    # Recurrence: when true the solver EXPANDS this into one occurrence per day across the horizon,
+    # each clamped to its day (and to `daily_window` if set), so e.g. "lunch" lands once on every
+    # mission day with no precedence wiring. `days` limits which 0-based days it recurs on.
+    recurs_daily: bool = False
+    daily_window: Optional[DailyWindow] = None
+    days: Union[Literal["all"], list[int]] = "all"
+
+    @field_validator("days")
+    @classmethod
+    def _check_days(cls, v):
+        if v == "all":
+            return v
+        if not v or any(d < 0 for d in v):
+            raise ValueError("days must be 'all' or a list of non-negative day indices")
+        return v
 
 
 class _Constraint(BaseModel):
@@ -64,9 +97,32 @@ class Conditional(_Constraint):
     then: dict   # e.g. {"set_duration": {"activity": "sail", "factor": 2}}
 
 
+class WorkingWindow(_Constraint):
+    # Open hours for a section: activities may only run inside [open, close]. Unlike time_window
+    # (absolute minutes, day-1 only), open/close are a DAILY clock that repeats every day across
+    # the horizon, so "09:00–17:00" closes each night, not just day 1.
+    type: Literal["working_window"] = "working_window"
+    section: str = "all"   # "all" = every activity; otherwise match Activity.section
+    open: str = "09:00"    # open <  close = same-day window
+    close: str = "17:00"   # open >= close = overnight wrap (the open span crosses midnight)
+    # Which 0-based day indices the window applies to. "all" = every day in the horizon.
+    days: Union[Literal["all"], list[int]] = "all"
+
+    _check_times = field_validator("open", "close")(_validate_hhmm)
+
+    @field_validator("days")
+    @classmethod
+    def _check_days(cls, v):
+        if v == "all":
+            return v
+        if not v or any(d < 0 for d in v):
+            raise ValueError("days must be 'all' or a list of non-negative day indices")
+        return v
+
+
 # The discriminated union: pick the variant by its "type" field.
 Constraint = Annotated[
-    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional],
+    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow],
     Field(discriminator="type"),
 ]
 

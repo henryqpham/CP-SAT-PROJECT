@@ -107,7 +107,7 @@ CP-SAT-PROJECT/
 ## The intermediate format (IR)
 
 One typed JSON document you build and edit by hand. Each constraint `type` maps 1:1 to a CP-SAT
-call; `enabled` toggles a rule without losing its numbers. The five constraint types are:
+call; `enabled` toggles a rule without losing its numbers. The constraint types are:
 
 - `time_window` — an `earliest` start and/or `latest_end` (`"HH:MM"`) for one `activity`.
 - `no_overlap` — a set of `activities` (or `"all"`) that can't run at the same time.
@@ -116,11 +116,24 @@ call; `enabled` toggles a rule without losing its numbers. The five constraint t
   multi-activity generalization of `precedence`).
 - `conditional` — a `when` / `then` rule, e.g. *when* kiteboard is absent, *then* set sail's
   duration ×2.
+- `working_window` — open hours for a `section` (or `"all"`): `open` / `close` (`"HH:MM"`). Unlike
+  `time_window`'s absolute day-1 clock, these are a **daily** clock that repeats every day across
+  the horizon, so activities in that section can only run inside the open hours (the solver forbids
+  the closed complement each day; `open >= close` wraps overnight). It's the per-day mechanism; its
+  closed bands are shaded on the timeline. (Replaces the old, never-wired `scenario.day`.)
 
 An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP) an optional
 **`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized
 (they can't overlap), which is what makes the what-if real: drop a second task into a busy section
 and watch the timeline stretch or go red.
+
+An activity can also set **`recurs_daily: true`** (with an optional **`daily_window`** `{open, close}`
+and a `days` filter): the solver then *expands* it into **one occurrence per day** across the horizon,
+each clamped to its own day. So one `lunch` with a `daily_window` of `11:00–14:00` lands once on every
+mission day — no precedence wiring — instead of all the meals piling onto day 1. This is how the
+multi-day demo gets a real daily rhythm. (Recurring activities are standalone rhythm: they can't be
+named by `precedence`/`sequence`/`no_overlap`/`time_window`/`conditional`, which match the source id —
+only the per-day occurrences, e.g. `lunch#d2`, exist in the solve.)
 
 Activities run free across the planning **horizon** — one 24h day by default, or set
 `"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity

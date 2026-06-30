@@ -284,7 +284,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   color: var(--muted);
   margin: 0;
 }
-.add-constraint { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
 /* cards (constraint cards) — prime target for the "white line appears" hover */
 .card {
@@ -499,7 +498,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   border-left: 1px dashed var(--border-strong);
   pointer-events: none;
 }
-.tick-label { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.66rem; }
+/* Shaded "closed" hours behind a lane — the out-of-window time of a working_window. */
+:root { --closed-fill: rgba(120, 120, 140, 0.14); }
+.closed-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--closed-fill);
+  pointer-events: none;
+}
+.tick-label { position: absolute; top: 0; transform: translateX(-50%); color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.66rem; white-space: nowrap; }
+/* day boundaries on the multi-day axis: brighter + bold so they stand out from the HH:MM ticks */
+.tick-label.tick-day { color: var(--ink); font-weight: 600; }
 .bar {
   position: absolute;
   top: 3px;
@@ -658,7 +668,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .modal-search { flex: 1; min-width: 12rem; }
 /* the inspector reuses the modal shell but is narrower and scrolls its own body */
 .modal-narrow { width: min(440px, 92vw); }
+/* constraints manager: a wide popup so the card grid runs multiple columns (like the Library) */
+.modal-constraints { width: min(1040px, 95vw); height: 85vh; max-height: 85vh; }
 .modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.9rem 1.1rem; }
+
+/* constraint cards reuse .lib-card; dim the disabled ones + style the Edit button in the footer */
+.con-card.off { opacity: 0.5; }
+.con-card-edit { background: var(--surface-2); color: var(--ink); }
+.con-card-edit:hover { background: var(--surface-3); }
+/* modal footer: right-aligned action buttons (Cancel / Add) */
+.modal-foot {
+  display: flex; justify-content: flex-end; gap: 0.5rem;
+  padding: 0.75rem 1.1rem; border-top: 1px solid var(--border);
+}
 .modal-close {
   margin-left: auto; border: none; background: transparent; color: var(--muted);
   font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 0.3rem; border-radius: 6px;
@@ -868,8 +890,30 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent); border: 2px solid var(--bg); cursor: pointer;
 }
 
-/* roster ("On this plan"): the activities currently in the plan */
-#roster { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.6rem; }
+/* roster ("On this plan"): the activities currently in the plan.
+   Scrolls inside its own box (max-height) so a long plan never pushes the page down. */
+#roster {
+  display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem;
+  max-height: 55vh; overflow-y: auto; padding-right: 0.15rem;
+}
+/* one section block: a labelled, color-accented group of rows */
+.roster-group {
+  display: flex; flex-direction: column; gap: 0.3rem;
+  /* --group-hue is set inline per group (derived from the section name in app.js) */
+  border-left: 2px solid hsl(var(--group-hue, 210), 55%, 55%);
+  padding-left: 0.5rem;
+}
+.roster-group-head {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.15rem 0.1rem; font-size: 0.78rem;
+  color: hsl(var(--group-hue, 210), 60%, 72%);
+}
+.roster-group-name { font-weight: 700; letter-spacing: 0.02em; }
+.roster-group-count {
+  color: var(--muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  background: hsla(var(--group-hue, 210), 55%, 55%, 0.14);
+  border-radius: 999px; padding: 0 0.4rem; font-size: 0.7rem;
+}
 /* roster filter toolbar (reuses the .lib-chips / .lib-chip styles for the section chips) */
 .roster-tools { margin: 0 0 0.4rem; }
 .roster-search { width: 100%; }

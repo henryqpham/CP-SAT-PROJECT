@@ -1,3 +1,4 @@
 [
-  { "name": "lake", "title": "Lake day", "description": "The full demo — time windows, precedence, an optional kiteboard, and a conditional duration." }
+  { "name": "lake", "title": "Lake day", "description": "The full demo — time windows, precedence, an optional kiteboard, and a conditional duration." },
+  { "name": "nasa_mission_3day", "title": "3-Day NASA Mission (4 crew)", "description": "4-crew Artemis-style 3-day arc that spreads across the horizon: Day-1 Orion transit + burn, Day-2 HLS docking/transfer, Day-3 EVA. Daily rhythm (meals, comms passes, exercise) uses recurs_daily so each lands once per day with no precedence wiring; one-off mission phases stay pinned by working_window day filters; sleeps are nightly working_window blocks. Exercises all 6 constraint types incl. 4 per-crew no_overlap groups; horizon 4320 (3 days)." }
 ]
