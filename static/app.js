@@ -2112,10 +2112,43 @@ function tagNarrowBars(scope) {
   }
 }
 
-// ---- the draggable mission-elapsed cursor -------------------------------
-// One full-height line across every lane, parked at `cursorMin` (defaults to the plan's start). The
-// gutter offset means we can't use a % left like the bars do, so we measure a real track's geometry
-// and place the line in pixels relative to .gantt — recomputed on every draw, zoom, and drag.
+// ---- the timeline cursor / playhead (video-editor style) -----------------
+// A full-height line across the ruler + every lane, parked at `cursorMin`. You move it by clicking or
+// dragging ANYWHERE on the chart (like a video editor's playhead), and it magnetically SNAPS to bar
+// start/end edges (and day midnights) within a few pixels — hold Alt to bypass. Arrow keys nudge it
+// when focused. The gutter offset means we place it in measured pixels (not a % left, like the bars).
+const SNAP_PX = 8; // magnetic snap distance to a bar edge, in pixels
+
+// Every time the playhead can snap to: each bar's start & end, plus day midnights in the visible range.
+function snapTargets() {
+  const t = [];
+  for (const it of shownSchedule || []) t.push(it.start, it.end);
+  if (axisCtx) {
+    for (let d = Math.ceil(axisCtx.t0 / DAY) * DAY; d <= axisCtx.t0 + axisCtx.span; d += DAY) t.push(d);
+  }
+  return t;
+}
+
+// Snap a raw minute value to the nearest target within SNAP_PX (converted to minutes for the current
+// zoom), unless bypassed. Returns { min, snapped }.
+function snapCursorMin(min, track, bypass) {
+  if (bypass || !axisCtx || !track || !track.offsetWidth) return { min, snapped: false };
+  const thresh = SNAP_PX * (axisCtx.span / track.offsetWidth);
+  let best = min, bestD = thresh, snapped = false;
+  for (const edge of snapTargets()) {
+    const d = Math.abs(min - edge);
+    if (d <= bestD) { bestD = d; best = edge; snapped = true; }
+  }
+  return { min: best, snapped };
+}
+
+// Viewport clientX -> minutes on the axis (all tracks share the x-range, so any lane track works).
+function minFromClientX(clientX, track) {
+  const r = track.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+  return axisCtx.t0 + frac * axisCtx.span;
+}
+
 function renderNowLine() {
   const g = $("timeline").querySelector(".gantt");
   if (!g || !axisCtx) return;
@@ -2130,14 +2163,27 @@ function renderNowLine() {
   const line = document.createElement("div");
   line.className = "now-line";
   line.setAttribute("role", "slider");
-  line.setAttribute("aria-label", "Mission-elapsed cursor (drag to move)");
+  line.setAttribute("tabindex", "0");
+  line.setAttribute("aria-label", "Timeline cursor — click or drag the timeline to move it, arrow keys to nudge");
   line.append(makeEl("span", timeLabel(cursorMin), "now-label"));
   g.append(line);
   positionNowLine(g); // place it now that it's in the DOM
-  line.addEventListener("mousedown", (e) => startNowDrag(e, g));
+  line.addEventListener("keydown", (e) => nudgeCursor(e, g));
+
+  // Click / scrub ANYWHERE on the chart moves the playhead (video-editor style). Wired once per chart;
+  // a bar's own click still selects it (we don't cancel the click), and lane labels keep their toggle.
+  if (!g.dataset.scrubWired) {
+    g.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest(".lane-label")) return;
+      startScrub(e, g);
+    });
+    g.dataset.scrubWired = "1";
+  }
 }
-// Place the existing .now-line at cursorMin using the track column's measured geometry.
-function positionNowLine(g) {
+
+// Place the .now-line at cursorMin using the track column's measured geometry; span it from the ruler
+// down through the last lane. `snapped` toggles the "locked to an edge" highlight (color-flip).
+function positionNowLine(g, snapped) {
   const line = g.querySelector(".now-line");
   const track = g.querySelector(".gantt-track.lane");
   const rows = g.querySelectorAll(".gantt-lane");
@@ -2145,31 +2191,55 @@ function positionNowLine(g) {
   const { t0, span } = axisCtx;
   const frac = span > 0 ? (cursorMin - t0) / span : 0;
   const x = track.offsetLeft + frac * track.offsetWidth;
-  // Span the playhead from the time axis (ruler) down through the last lane, so it reads like a
-  // video-editor playhead connecting the ruler to the bars — not just the lane area.
   const axis = g.querySelector(".gantt-axis");
   const top = axis ? axis.offsetTop : rows[0].offsetTop;
   const last = rows[rows.length - 1];
   line.style.left = x + "px";
   line.style.top = top + "px";
   line.style.height = (last.offsetTop + last.offsetHeight - top) + "px";
+  if (snapped !== undefined) line.classList.toggle("snapped", !!snapped);
   const lbl = line.querySelector(".now-label");
   if (lbl) lbl.textContent = timeLabel(Math.round(cursorMin));
 }
-function startNowDrag(e, g) {
-  e.preventDefault();
+
+// Seek to the mousedown position, then keep following the mouse until release (a scrub), snapping to
+// bar edges as you go (hold Alt to bypass). preventDefault stops text-selection but leaves the click,
+// so clicking a bar still selects it AND moves the playhead there.
+function startScrub(e, g) {
   const track = g.querySelector(".gantt-track.lane");
   if (!track || !axisCtx) return;
-  const { t0, span } = axisCtx;
-  const move = (ev) => {
-    const r = track.getBoundingClientRect();
-    const frac = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
-    cursorMin = t0 + frac * span;
-    positionNowLine(g);
+  e.preventDefault();
+  const seek = (ev) => {
+    const s = snapCursorMin(minFromClientX(ev.clientX, track), track, ev.altKey);
+    cursorMin = s.min;
+    positionNowLine(g, s.snapped);
   };
-  const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
-  document.addEventListener("mousemove", move);
+  seek(e); // jump to the click immediately
+  const up = () => { document.removeEventListener("mousemove", seek); document.removeEventListener("mouseup", up); };
+  document.addEventListener("mousemove", seek);
   document.addEventListener("mouseup", up);
+}
+
+// Keyboard nudging when the playhead is focused: arrows step (Shift = coarse), Home/End jump to ends.
+function nudgeCursor(e, g) {
+  if (!axisCtx) return;
+  const { t0, span } = axisCtx;
+  const step = e.shiftKey ? 60 : 5; // minutes
+  const edges = snapTargets();
+  if (e.key === "ArrowLeft") cursorMin -= step;
+  else if (e.key === "ArrowRight") cursorMin += step;
+  else if (e.key === "ArrowUp") { // jump to the previous bar edge (like an NLE's prev-edit)
+    const prev = edges.filter((x) => x < cursorMin - 0.5).sort((a, b) => b - a);
+    if (prev.length) cursorMin = prev[0];
+  } else if (e.key === "ArrowDown") { // next bar edge
+    const next = edges.filter((x) => x > cursorMin + 0.5).sort((a, b) => a - b);
+    if (next.length) cursorMin = next[0];
+  } else if (e.key === "Home") cursorMin = t0;
+  else if (e.key === "End") cursorMin = t0 + span;
+  else return;
+  e.preventDefault();
+  cursorMin = Math.min(t0 + span, Math.max(t0, cursorMin));
+  positionNowLine(g, false);
 }
 
 // ---- one shared timeline tooltip ----------------------------------------
