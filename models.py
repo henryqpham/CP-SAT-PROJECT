@@ -40,6 +40,10 @@ class DailyWindow(BaseModel):
 class Activity(BaseModel):
     id: str
     duration: int  # minutes
+    # Provenance + display, carried end-to-end so a human can verify each item against the source
+    # document (filled by the doc-ingest path; empty for hand-built plans). The solver ignores both.
+    label: str = ""    # human-readable name (id is snake_case)
+    source: str = ""   # the exact requirement text/phrase this activity came from
     section: Optional[str] = None  # free-text group; same section = one at a time
     # Free-text owner/group label (a worker, a friend, a crew member…). DISPLAY-ONLY: the solver
     # ignores it; the dashboard can group the timeline swimlanes by it. You fill it in per activity.

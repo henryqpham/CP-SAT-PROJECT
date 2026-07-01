@@ -33,6 +33,9 @@
         <button type="button" id="plan-export" class="btn btn-ghost btn-sm" title="Save this plan to a file">⭳ Export</button>
         <button type="button" id="plan-import" class="btn btn-ghost btn-sm" title="Load a plan from a file (opens a new tab)">⭱ Import</button>
         <input type="file" id="plan-import-file" accept="application/json,.json" hidden />
+        <span class="plan-actions-sep" aria-hidden="true"></span>
+        <button type="button" id="plan-import-doc" class="btn btn-ghost btn-sm" title="Import a .docx requirements document — extract its activities + constraints to review">📄 Import doc</button>
+        <input type="file" id="plan-import-doc-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
       </div>
 
       <div id="alert" class="alert" role="alert" hidden></div>
@@ -205,6 +208,24 @@
         <div class="modal-foot">
           <button type="button" id="constraint-cancel" class="btn btn-ghost btn-sm">Cancel</button>
           <button type="button" id="constraint-commit" class="btn btn-primary btn-sm">+ Add constraint</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import document: REVIEW the activities + constraints extracted from a .docx before they load
+         into a plan. Nothing touches the planner until the human confirms here (a rules/LLM pass can
+         drop or mis-read a rule), per CLAUDE.md: validate the parsed constraints, not just the solve. -->
+    <div id="extract-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-extract" role="dialog" aria-modal="true" aria-label="Review extracted document">
+        <div class="modal-head">
+          <h2 class="modal-title">Review extracted document</h2>
+          <button type="button" id="extract-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div id="extract-body" class="modal-body extract-body"></div>
+        <div class="modal-foot">
+          <span id="extract-foot-note" class="extract-foot-note"></span>
+          <button type="button" id="extract-cancel" class="btn btn-ghost btn-sm">Cancel</button>
+          <button type="button" id="extract-load" class="btn btn-primary btn-sm">Load into new plan</button>
         </div>
       </div>
     </div>

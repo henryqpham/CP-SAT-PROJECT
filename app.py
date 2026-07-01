@@ -13,11 +13,16 @@ from pydantic import ValidationError  # noqa: E402
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
 from solver import explain_infeasible, relax_by_priority, solve  # noqa: E402
+from ingest import extract_blocks  # noqa: E402
+from extract import extract_document  # noqa: E402
 
 app = Flask(__name__)
 # Dev: don't let the browser cache static JS/CSS, so code edits show on a normal refresh
 # (avoids the "I fixed it but the page still shows the old behavior" stale-cache trap).
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+# Refuse an oversized upload before we read it (the ingest step also guards against a zip bomb that
+# inflates in memory). 25 MB is far above any real requirements .docx; JSON scenario posts are tiny.
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 
 @app.get("/")
@@ -101,6 +106,28 @@ def relax_route():
     if err:
         return err
     return jsonify(relax_by_priority(scenario))
+
+
+@app.post("/extract")
+def extract_route():
+    # Ingest an uploaded .docx into a review-ready scenario (deterministic rules first, local Ollama
+    # only for a residual field a rule couldn't read). The browser shows {scenario, coverage,
+    # warnings} for the human to CONFIRM before it loads into a plan — a rules/LLM pass can drop or
+    # mis-read a rule, so nothing touches the planner unreviewed (CLAUDE.md: validate the parsed
+    # constraints, not just the solve). Everything runs locally; no document leaves the machine.
+    file = request.files.get("document")
+    if file is None or not file.filename:
+        return jsonify({"error": "Attach a .docx document to import."}), 400
+    if not file.filename.lower().endswith(".docx"):
+        return jsonify({"error": "Only .docx documents are supported (not PDF/DOC)."}), 400
+    try:
+        blocks = extract_blocks(file.stream)
+        return jsonify(extract_document(blocks["blocks"]))
+    except ValueError as e:  # not a real .docx, or the zip-bomb guard tripped
+        return jsonify({"error": f"Couldn't read that document: {e}"}), 400
+    except Exception:  # unexpected parse failure — keep the message generic, don't leak a stack trace
+        return jsonify({"error": "Extraction failed while reading the document. "
+                                 "Check that it's a valid .docx and try again."}), 500
 
 
 if __name__ == "__main__":

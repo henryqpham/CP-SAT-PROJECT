@@ -16,8 +16,11 @@ app and how CP-SAT works.
 
 ## Status
 
-A manual base is working — and the schedule now spans a custom **multi-day horizon**, not just one
-day. The rest of the MVP (document ingest, fill objective) is being built on top of it.
+A manual base is working, the schedule spans a custom **multi-day horizon**, and a first
+**document-ingest** path is in: drop in a `.docx` requirements spec and a deterministic, rules-first
+pass extracts its activities + constraints for you to **review** before they load (the local Ollama
+model is only a fallback for a field the rules can't read). The rest of the MVP (the fill objective,
+crew-parallel sections) builds on top of it.
 
 **The MVP (the goal):** drop in a large document → a local Ollama model parses it into many
 activities, each with its own constraints → pick which to add → schedule them across a **multi-day,
@@ -40,17 +43,25 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 - When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
   rules (with one-click disable). Load the **Lake day (over-constrained)** example to see it.
 - Undo/redo, plus duplicate a plan and export/import it as a JSON file (all local, no cloud).
+- **Document ingest** — import a `.docx` requirements spec (topbar **📄 Import doc**). A deterministic
+  rules-first pass (`ingest.py` → `extract_det.py` → `extract.py`) reads durations, resources,
+  dependencies and dated deadlines straight into the IR; the local Ollama model is used **only** for a
+  residual field a rule couldn't read. You **review** the extracted activities + constraints (and a
+  coverage report) before they load into a new plan — nothing is scheduled unreviewed. See `/extract`.
 
 **Next, toward the MVP (not paused — the actual target):**
 
-- Document ingest + local-Ollama parsing into activities & constraints (re-activates `/parse`).
 - A fill / utilization objective so the solver packs the window (the North-Star "fill").
 - The crew / section model so many sections pack in parallel.
-- Prior art for multi-day + `.docx` ingest lives on `archive/advanced-multiday-classifier` — revive it.
+- Extend the doc extractor to the newer constraint types (`time_lag`, `overlap`, `working_window`, …):
+  the first pass emits `precedence` + dated-deadline `time_window`s; more of the archive pipeline
+  (the document classifier, recurrence) is still on `archive/advanced-multiday-classifier`.
+- The sentence-to-JSON `/parse` path stays dormant (ingest is document-first, not a chat box).
 
 ## How it works
 
-Today you build the plan by hand (AI document-ingest is the MVP target — see Status):
+You build the plan by hand, or import a `.docx` requirements spec (see Status) — either way you end
+up editing the same IR:
 
 1. Add activities in a grid, each with a **duration** and a **section** (Deli, FrontDesk, …).
 2. Each section is treated as **one resource** — it can only do one thing at a time, so two
@@ -69,24 +80,31 @@ endpoints:
   (deletion filtering: drop each rule and re-solve). Called on demand, not in the live solve loop.
 - **`/relax`** — for an INFEASIBLE plan, greedily drops the **lowest-priority** rules in the conflict
   (never a priority-1 rule) until it solves. On-demand, next to `/explain`.
+- **`/extract`** — upload a `.docx`; returns `{scenario, coverage, warnings}` from the deterministic
+  rules-first ingest (local Ollama only for a residual field). The dashboard shows it for **review**
+  before it loads into a plan, so a dropped or mis-read rule is caught before anything is scheduled.
 - **`/example[/<name>]`** — returns a hand-written demo scenario; `/examples` lists them.
 - **`/parse`** — the old sentence-to-JSON route, kept but **dormant** (AI is off for now).
 
 ```mermaid
 flowchart LR
     U(["Mission manager"]) -->|enter / edit activities| FE["Dashboard<br/>grid + live timeline"]
+    U -->|import .docx| FE
 
     subgraph FLASK["Flask app (app.py)"]
         direction TB
         SOLVE["/solve<br/>CP-SAT (horizon-bounded)"]
+        EXTRACT["/extract<br/>ingest.py + extract_det.py + extract.py<br/>docx → activities + constraints<br/>(rules-first; Ollama residual only)"]
         EXAMPLE["/example<br/>demo IR"]
         MODELS["models.py<br/>Pydantic IR"]
         PARSE["/parse<br/>(dormant — AI off)"]
     end
 
     FE -->|"edit (debounced auto-solve)"| SOLVE -->|schedule| FE
+    FE -->|"Import doc"| EXTRACT -->|"{scenario, coverage} → review, then load"| FE
     FE -->|"Load example"| EXAMPLE -->|editable IR| FE
     MODELS -.validates.-> SOLVE
+    MODELS -.validates.-> EXTRACT
 ```
 
 Data flow: **manual grid entry (grouped by section) → live (debounced) CP-SAT → timeline → tweak
@@ -97,9 +115,13 @@ rule, watch it react — in any order.
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /relax (drop lowest-priority rules), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
-├── models.py            # Pydantic IR: Activity (+ section, + display-only assignee/type) + constraint union — the JSON contract
+├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /relax (drop lowest-priority rules), /extract (.docx ingest), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
+├── models.py            # Pydantic IR: Activity (+ section, display-only assignee/type, provenance label/source) + constraint union — the JSON contract
 ├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
+├── ingest.py            # .docx -> ordered, provenance-tagged blocks (headings, [VR-xxx] requirements, dates, "shall" clauses); in-memory, zip-bomb-guarded
+├── extract_det.py       # deterministic backbone: regex rules read duration/resource/dependencies/dated deadlines from the blocks (no LLM)
+├── extract.py           # orchestrates ingest+rules into a validated Scenario; local Ollama fills ONLY residual fields; adapts to the current IR + infers priority from RFC 2119 keywords
+├── testdata/            # sample_vehicle_requirements.docx (+ its generator) — a synthetic spec with two planted infeasibilities, for testing the ingest path
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
 ├── examples/lake.json   # hand-written IR to test /solve without any AI
 ├── examples/lake_infeasible.json  # deliberately INFEASIBLE demo for the why-infeasible explainer
@@ -168,6 +190,11 @@ friend, a crew member). It's **display-only** (the solver ignores it); the timel
 picker can lane the schedule by it, so the same swimlane view works for any domain without baking in
 "crew". You set it per activity in the Inspector (with autocomplete from values already in the plan).
 
+When an activity comes from a `.docx` import, two more optional fields ride along for provenance:
+**`label`** (the human-readable requirement name) and **`source`** (the exact text it was read from).
+Both are **display-only** — the solver ignores them — so every imported activity can be traced back
+to the document. Hand-built plans just leave them empty (they default to `""`).
+
 An activity can also set **`recurs_daily: true`** (with an optional **`daily_window`** `{open, close}`
 and a `days` filter): the solver then *expands* it into **one occurrence per day** across the horizon,
 each clamped to its own day. So one `lunch` with a `daily_window` of `11:00–14:00` lands once on every
@@ -217,8 +244,10 @@ model with `OLLAMA_MODEL` — only if you re-enable `/parse`.)
 
 ## Notes
 
-- Local-only — no database, no auth, no hosting (privacy: data stays on the machine).
-- Manual entry today; AI document-ingest (local Ollama) is the MVP target — the `/parse` path is
-  kept dormant for now, not removed.
-- The advanced version (multi-day, `.docx` import, document extraction) lives on the branch
-  `archive/advanced-multiday-classifier` if it's ever needed again.
+- Local-only — no database, no auth, no hosting (privacy: data stays on the machine; an imported
+  `.docx` is parsed in memory and never leaves the machine).
+- You build plans by hand or import a `.docx` (deterministic rules first, local Ollama only as a
+  residual fallback). The sentence-based `/parse` chat path stays dormant — ingest is document-first.
+- A first pass of the `.docx` ingest pipeline is revived from `archive/advanced-multiday-classifier`
+  (see `ingest.py` / `extract_det.py` / `extract.py`); the rest of that branch (the schedule-vs-context
+  classifier, recurrence) stays there for later.

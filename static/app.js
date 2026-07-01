@@ -151,6 +151,14 @@ $("plan-duplicate").onclick = duplicateTab;
 $("plan-export").onclick = exportPlan;
 $("plan-import").onclick = () => $("plan-import-file").click();
 $("plan-import-file").onchange = (e) => { if (e.target.files[0]) importPlan(e.target.files[0]); e.target.value = ""; };
+// Import a .docx requirements document: extract -> REVIEW -> confirm-load. Nothing reaches the planner
+// until the user approves it in the review popup (a rules/LLM pass can drop or mis-read a rule).
+$("plan-import-doc").onclick = () => $("plan-import-doc-file").click();
+$("plan-import-doc-file").onchange = (e) => { if (e.target.files[0]) runExtract(e.target.files[0]); e.target.value = ""; };
+$("extract-close").onclick = closeExtractModal;
+$("extract-cancel").onclick = closeExtractModal;
+$("extract-load").onclick = confirmExtractLoad;
+$("extract-modal").onclick = (e) => { if (e.target === $("extract-modal")) closeExtractModal(); }; // backdrop click
 // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo — but only when NOT typing in a field,
 // so a focused text input keeps its own native undo.
 document.addEventListener("keydown", (e) => {
@@ -224,7 +232,8 @@ $("roster-search").oninput = (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("library-modal").hidden) closeLibrary();
+  if (!$("extract-modal").hidden) closeExtractModal();
+  else if (!$("library-modal").hidden) closeLibrary();
   else if (!$("constraint-modal").hidden) closeAddConstraintModal();
   else if (!$("constraints-modal").hidden) closeConstraintsList();
   else if (!$("inspector-modal").hidden) closeInspector();
@@ -672,6 +681,194 @@ function importPlan(file) {
     render();
   };
   reader.readAsText(file);
+}
+
+// ---- document import (.docx -> extract -> review -> confirm-load) --------
+// The extracted {scenario, coverage, warnings} waiting for the user's confirm. It is NOT loaded into
+// the planner until they click "Load into new plan" — a deterministic/LLM pass can drop or mis-read a
+// rule, so a human eyeballs the activities + constraints (and the coverage report) FIRST.
+let pendingExtract = null;
+
+async function runExtract(file) {
+  await withBusy($("plan-import-doc"), "Reading…", async () => {
+    const fd = new FormData();
+    fd.append("document", file, file.name);
+    let r;
+    try {
+      r = await fetch("/extract", { method: "POST", body: fd }); // multipart, not JSON — no post() helper
+    } catch {
+      throw new Error("Could not reach the server — is the Flask app running?");
+    }
+    const data = await safeJSON(r);
+    if (!r.ok) throw new Error((data && data.error) || `Import failed (${r.status}).`);
+    pendingExtract = data;
+    renderExtractReview(data);
+    openExtractModal();
+  });
+}
+
+function openExtractModal() {
+  $("extract-modal").hidden = false;
+  $("extract-load").focus(); // move focus into the dialog
+}
+function closeExtractModal() {
+  $("extract-modal").hidden = true;
+  pendingExtract = null; // discard on cancel/close; confirmExtractLoad reads it BEFORE closing
+}
+
+// Load the reviewed scenario into a fresh plan tab (same path as importPlan). Kept separate so the
+// import always opens a NEW tab and never clobbers the plan the user is on.
+function confirmExtractLoad() {
+  const sc = pendingExtract && pendingExtract.scenario;
+  if (!sc) { closeExtractModal(); return; }
+  saveTabs();
+  tabs.push({ name: "Imported doc", scenario: clone(sc) });
+  activeTab = tabs.length - 1;
+  scenario = clone(sc);
+  selectedId = null;
+  lastFeasibleSchedule = null; // a fresh plan must not show the previous plan's dimmed timeline
+  resetRosterFilter();
+  resetHistory();
+  saveTabs();
+  renderTabs();
+  render();
+  closeExtractModal();
+  flash(`Loaded ${sc.activities.length} activities from the document`);
+}
+
+// Build the read-only review: a coverage summary, extraction notes, then the activity + constraint
+// tables. Everything is set via textContent (makeEl), so raw document text can never inject markup.
+function renderExtractReview(result) {
+  const scenario = result.scenario || { activities: [], constraints: [] };
+  const coverage = result.coverage || {};
+  const warnings = result.warnings || [];
+  const ext = coverage.extraction || {};
+  const body = $("extract-body");
+  body.innerHTML = "";
+
+  // Summary chips: the trust headline (how much was read by rules, not guessed).
+  const summary = makeEl("div", "", "extract-summary");
+  const chip = (val, label) => {
+    const c = makeEl("div", "", "extract-chip");
+    c.append(makeEl("span", String(val), "extract-chip-val"));
+    c.append(makeEl("span", label, "extract-chip-lbl"));
+    return c;
+  };
+  const nA = scenario.activities.length;
+  summary.append(chip(nA, "activities"));
+  summary.append(chip(scenario.constraints.length, "constraints"));
+  if (ext.by_method && ext.by_method.deterministic != null)
+    summary.append(chip(`${ext.by_method.deterministic}/${nA}`, "durations by rule"));
+  if (ext.dependencies) summary.append(chip(ext.dependencies.deterministic, "dependencies"));
+  if (ext.dated_deadlines != null) summary.append(chip(ext.dated_deadlines, "deadlines"));
+  if (coverage.start_date) summary.append(chip(coverage.start_date, "project start"));
+  if (coverage.horizon_days != null) summary.append(chip(coverage.horizon_days, "horizon (days)"));
+  body.append(summary);
+
+  // Coverage tripwires: requirements found in the doc but NOT extracted, or constraints pointing at a
+  // missing activity. These are the "silently dropped a rule" cases — surface them loudly.
+  const flags = [];
+  if (coverage.not_extracted && coverage.not_extracted.length)
+    flags.push(`${coverage.not_extracted.length} requirement(s) in the doc were NOT extracted: ${coverage.not_extracted.join(", ")}`);
+  if (coverage.dangling_references && coverage.dangling_references.length)
+    flags.push(`${coverage.dangling_references.length} constraint(s) reference a missing activity.`);
+  if (flags.length) {
+    const box = makeEl("div", "", "extract-flags");
+    for (const f of flags) box.append(makeEl("div", "⚠ " + f, "extract-flag"));
+    body.append(box);
+  }
+
+  // Notes from extraction (the deterministic-first headline + every warning), collapsible.
+  if (warnings.length) {
+    const d = makeEl("details", "", "extract-notes");
+    d.open = true;
+    d.append(makeEl("summary", `Notes from extraction (${warnings.length})`));
+    const ul = makeEl("ul", "", "extract-notes-list");
+    for (const w of warnings) ul.append(makeEl("li", w));
+    d.append(ul);
+    body.append(d);
+  }
+
+  body.append(makeEl("h3", `Activities (${nA})`, "extract-section-title"));
+  body.append(extractActivitiesTable(scenario.activities));
+  body.append(makeEl("h3", `Constraints (${scenario.constraints.length})`, "extract-section-title"));
+  body.append(extractConstraintsTable(scenario.constraints));
+
+  $("extract-foot-note").textContent = "Loads into a NEW plan tab — your current plan is untouched.";
+}
+
+function extractTableShell(headers) {
+  const wrap = makeEl("div", "", "extract-table-wrap");
+  const table = makeEl("table", "", "extract-table");
+  const thead = makeEl("thead");
+  const hr = makeEl("tr");
+  for (const h of headers) hr.append(makeEl("th", h));
+  thead.append(hr);
+  table.append(thead);
+  const tb = makeEl("tbody");
+  table.append(tb);
+  wrap.append(table);
+  return { wrap, tb };
+}
+
+function extractActivitiesTable(acts) {
+  const { wrap, tb } = extractTableShell(["id", "name", "duration", "section (resource)", "group / doc-section"]);
+  if (!acts.length) tb.append(oneCellRow(5, "No activities extracted."));
+  for (const a of acts) {
+    const tr = makeEl("tr");
+    tr.append(makeEl("td", a.id, "extract-mono"));
+    tr.append(makeEl("td", a.label || "—"));
+    tr.append(makeEl("td", fmtMinutes(a.duration)));
+    tr.append(makeEl("td", a.section || "—"));
+    tr.append(makeEl("td", a.type || "—", "extract-dim"));
+    tb.append(tr);
+  }
+  return wrap;
+}
+
+function extractConstraintsTable(cons) {
+  const { wrap, tb } = extractTableShell(["pri", "type", "detail", "source"]);
+  if (!cons.length) tb.append(oneCellRow(4, "No constraints extracted."));
+  for (const c of cons) {
+    const tr = makeEl("tr");
+    const pt = makeEl("td");
+    pt.append(priorityBadge(c.priority));
+    tr.append(pt);
+    tr.append(makeEl("td", c.type, "extract-mono"));
+    tr.append(makeEl("td", extractConstraintDetail(c)));
+    tr.append(makeEl("td", c.source || c.label || "—", "extract-dim extract-src"));
+    tb.append(tr);
+  }
+  return wrap;
+}
+
+function extractConstraintDetail(c) {
+  if (c.type === "precedence") return `${c.before} → ${c.after}`;
+  if (c.type === "time_window") {
+    const parts = [];
+    if (c.earliest) parts.push(`≥ ${c.earliest}`);
+    if (c.latest_end) parts.push(`≤ ${c.latest_end}`);
+    if (c.day != null) parts.push(`day ${c.day + 1}`);
+    return `${c.activity}${parts.length ? ": " + parts.join(", ") : ""}`;
+  }
+  return c.label || c.type;
+}
+
+function oneCellRow(span, text) {
+  const tr = makeEl("tr");
+  const td = makeEl("td", text, "extract-empty");
+  td.colSpan = span;
+  tr.append(td);
+  return tr;
+}
+
+// Minutes -> a compact human label ("90 min" -> "1h 30m", "480" -> "8h", "5760" -> "4d").
+function fmtMinutes(m) {
+  m = Math.round(m || 0);
+  if (m < 60) return `${m} min`;
+  if (m % 1440 === 0) return `${m / 1440}d`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
 }
 
 // ---- network ------------------------------------------------------------

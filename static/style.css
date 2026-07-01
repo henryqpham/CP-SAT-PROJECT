@@ -807,6 +807,52 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
 .modal-close:hover { color: var(--bad); background: var(--bad-bg); }
+
+/* ---- Import-document review modal ------------------------------------- */
+/* Wide like the constraints manager so the activity/constraint tables breathe. */
+.modal-extract { width: min(1040px, 95vw); height: 85vh; max-height: 85vh; }
+.extract-body { display: flex; flex-direction: column; gap: 0.9rem; }
+/* footer note sits left; the buttons stay right-aligned (.modal-foot is justify-content: flex-end) */
+.extract-foot-note { margin-right: auto; align-self: center; color: var(--muted); font-size: 0.8rem; }
+
+/* trust headline: chips of counts (activities / rule-read durations / deadlines / project start) */
+.extract-summary { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.extract-chip {
+  display: flex; flex-direction: column; gap: 0.1rem; min-width: 4.5rem;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0.4rem 0.7rem;
+}
+.extract-chip-val { font-family: var(--font-mono); font-weight: 700; color: var(--ink); font-size: 0.95rem; }
+.extract-chip-lbl { color: var(--muted); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.03em; }
+
+/* coverage tripwires: a dropped requirement / dangling reference — warning-toned so it can't be missed */
+.extract-flags { display: flex; flex-direction: column; gap: 0.35rem; }
+.extract-flag {
+  background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn);
+  border-radius: var(--radius-sm); padding: 0.45rem 0.7rem; font-size: 0.85rem;
+}
+
+/* extraction notes: collapsible list of every warning (the deterministic-first headline is #1) */
+.extract-notes { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.7rem; }
+.extract-notes summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.extract-notes-list { margin: 0.5rem 0 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.82rem; }
+
+.extract-section-title { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; }
+
+/* the two review tables: banded, monospace ids, dimmed provenance — read-only (edit after loading) */
+.extract-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.extract-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.extract-table th {
+  position: sticky; top: 0; text-align: left; font-weight: 600; color: var(--muted);
+  background: var(--surface-2); padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border);
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.extract-table td { padding: 0.38rem 0.6rem; border-top: 1px solid var(--border-faint); color: var(--ink); vertical-align: top; }
+.extract-table tbody tr:nth-child(even) { background: var(--surface-1); }
+.extract-mono { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
+.extract-dim { color: var(--muted); }
+.extract-src { max-width: 22rem; font-size: 0.76rem; }
+.extract-empty { color: var(--muted); text-align: center; font-style: italic; padding: 0.8rem; }
 /* category filter chips (replaces the filter dropdown) */
 .lib-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; padding: 0.5rem 1.1rem; border-bottom: 1px solid var(--border); }
 .lib-chip {
