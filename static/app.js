@@ -1324,8 +1324,9 @@ function libEditRowEl(tpl) {
   // Enter saves, Esc cancels — quick keyboard editing.
   for (const el of [nameIn, catIn, secIn, durIn]) {
     el.onkeydown = (e) => {
-      if (e.key === "Enter") { e.preventDefault(); save(); }
-      else if (e.key === "Escape") cancel();
+      // stop Enter/Esc from bubbling to the global handlers (Esc would close the whole Library modal).
+      if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); save(); }
+      else if (e.key === "Escape") { e.stopPropagation(); cancel(); }
     };
   }
   return tr;
@@ -1595,20 +1596,7 @@ function labeledField(label, inputEl) {
 // Constraints manager state: a search box, a multi-select TYPE filter, and the current card page.
 let conSearch = "";
 let conTypes = new Set();
-let constraintsPage = 0; // 0-based page in the constraint card grid
-
-// How many cards fit the visible grid right now, so a page FILLS the area before paginating.
-// Measures the grid box (it's flex:1, so its size = the available area). Falls back when the modal
-// isn't visible yet (hidden -> 0 height). Card cell ~ 200px wide (minmax 190 + gap), ~112px tall.
-function conPageSize() {
-  const box = $("constraints");
-  const w = box ? box.clientWidth : 0;
-  const h = box ? box.clientHeight : 0;
-  if (!w || !h) return 60; // not measurable (modal hidden) — generous fallback
-  const cols = Math.max(1, Math.floor((w + 10) / 200));
-  const rows = Math.max(1, Math.floor((h + 10) / 112));
-  return cols * rows;
-}
+let constraintsPage = 0; // retained: a couple of handlers still reset it, but the constraints table scrolls (no paging)
 
 const CON_TYPE_LABEL = {
   time_window: "Time window", no_overlap: "No overlap", precedence: "Precedence",
@@ -1700,46 +1688,63 @@ function conChip(value, label, count, active) {
   return chip;
 }
 
-// Build one constraint CARD, reusing the library card styling (tinted by the type color via --cat):
-// title (label), a type·summary meta line, and a footer with enable, Edit, and delete. Editing
-// happens in the add-constraint popup (EDIT mode) — the card itself isn't inline-editable anymore.
-function conCardEl(c) {
-  const card = document.createElement("div");
-  card.className = "lib-card con-card" + (c.enabled === false ? " off" : "");
-  card.style.setProperty("--cat", constraintTypeColor(c.type));
+// The constraints table header — mirrors libTableHead so the two modals look identical.
+function conTableHead() {
+  const thead = document.createElement("thead");
+  const tr = document.createElement("tr");
+  for (const [label, cls] of [["Rule", "lt-name"], ["Type", "con-type"], ["Details", "con-sum"],
+    ["On", "con-on"], ["", "lt-add"]]) {
+    tr.append(makeEl("th", label, cls));
+  }
+  thead.append(tr);
+  return thead;
+}
 
-  card.append(makeEl("div", c.label || constraintTypeLabel(c.type), "lib-card-name"));
-  card.append(makeEl("div", constraintTypeLabel(c.type) + " · " + constraintSummary(c), "lib-card-meta"));
+// Build one constraint ROW for the table (same look as the Library rows): the rule label with the
+// type-colored left edge + dot, the type, a plain-English summary, an enable toggle, then Edit +
+// delete. Editing happens in the add-constraint popup (EDIT mode).
+function conRowEl(c) {
+  const tr = document.createElement("tr");
+  tr.className = "lt-row con-row" + (c.enabled === false ? " off" : "");
+  tr.style.setProperty("--cat", constraintTypeColor(c.type));
 
-  const foot = makeEl("div", "", "lib-card-foot");
+  const nameTd = makeEl("td", "", "lt-name");
+  nameTd.append(makeEl("span", "", "lt-dot"));
+  nameTd.append(makeEl("span", c.label || constraintTypeLabel(c.type), "lt-name-txt"));
+  tr.append(nameTd);
+
+  tr.append(makeEl("td", constraintTypeLabel(c.type), "con-type"));
+  tr.append(makeEl("td", constraintSummary(c), "con-sum"));
+
   // Enable toggle: flips c.enabled + re-solves, but must NOT open the editor.
+  const onTd = makeEl("td", "", "con-on");
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = c.enabled !== false;
   cb.title = "Enabled";
   cb.setAttribute("aria-label", "enabled");
-  cb.onchange = () => { c.enabled = cb.checked; card.classList.toggle("off", !cb.checked); scheduleSolve(); };
-  foot.append(cb);
+  cb.onchange = () => { c.enabled = cb.checked; tr.classList.toggle("off", !cb.checked); scheduleSolve(); };
+  onTd.append(cb);
+  tr.append(onTd);
 
+  const actTd = makeEl("td", "", "lt-add");
   const edit = makeEl("button", "Edit", "btn btn-sm con-card-edit");
   edit.type = "button";
   edit.onclick = (e) => { e.stopPropagation(); openEditConstraintModal(c); };
-  foot.append(edit);
-
+  actTd.append(edit);
   const del = deleteBtn((e) => {
     e.stopPropagation();
     const i = scenario.constraints.indexOf(c);
     if (i >= 0) scenario.constraints.splice(i, 1);
     render();
   });
-  foot.append(del);
-
-  card.append(foot);
-  return card;
+  actTd.append(del);
+  tr.append(actTd);
+  return tr;
 }
 
-// The constraints list as a paginated CARD GRID (same look as the Library): filtered by search +
-// type chips, one card per rule, edited in the add-constraint popup. Scales to hundreds.
+// The constraints list as a scrolling TABLE (same look as Browse Library): filtered by search + type
+// chips, one row per rule, edited in the add-constraint popup. The table scrolls, so there's no pager.
 function renderConstraints() {
   const box = $("constraints");
   if (!box) return;
@@ -1770,46 +1775,22 @@ function renderConstraints() {
   });
 
   const pager = $("constraints-pager");
-  if (pager) pager.innerHTML = "";
+  if (pager) pager.innerHTML = ""; // the table scrolls; keep the pager slot empty (mirrors the library)
 
   if (!cons.length) box.append(makeEl("p", "No constraints yet — use “+ Constraint” to add one.", "hint"));
   else if (!rows.length) box.append(makeEl("p", "No constraints match this filter.", "hint"));
   else {
-    // Fit as many cards as the grid area holds, then paginate. Clamp the page if a filter shrank
-    // the result set.
-    const pageSize = conPageSize();
-    const pageCount = Math.ceil(rows.length / pageSize);
-    if (constraintsPage >= pageCount) constraintsPage = pageCount - 1;
-    if (constraintsPage < 0) constraintsPage = 0;
-    const pageRows = rows.slice(constraintsPage * pageSize, constraintsPage * pageSize + pageSize);
-    const frag = document.createDocumentFragment();
-    for (const c of pageRows) frag.append(conCardEl(c));
-    box.append(frag);
-    renderConstraintsPager(pageCount);
+    const table = document.createElement("table");
+    table.className = "lib-table";
+    table.append(conTableHead());
+    const tbody = document.createElement("tbody");
+    for (const c of rows) tbody.append(conRowEl(c));
+    table.append(tbody);
+    box.append(table);
   }
 
   const btn = $("open-constraints");
   if (btn) btn.textContent = `⚙ Manage constraints (${cons.length})`;
-}
-
-// Numbered pager for the constraint cards — mirrors renderLibraryPager, reusing pageWindow() + the
-// .lib-pager / .lib-page styling. Renders nothing when there's only one page.
-function renderConstraintsPager(pageCount) {
-  const box = $("constraints-pager");
-  if (!box || pageCount <= 1) return;
-  const pageBtn = (label, page, opts = {}) => {
-    const b = makeEl("button", label, "lib-page" + (opts.active ? " active" : ""));
-    b.type = "button";
-    if (opts.disabled) b.disabled = true;
-    else b.onclick = () => { constraintsPage = page; renderConstraints(); };
-    return b;
-  };
-  box.append(pageBtn("‹ Prev", constraintsPage - 1, { disabled: constraintsPage <= 0 }));
-  for (const p of pageWindow(constraintsPage, pageCount)) {
-    if (p === "…") box.append(makeEl("span", "…", "lib-page-gap"));
-    else box.append(pageBtn(String(p + 1), p, { active: p === constraintsPage }));
-  }
-  box.append(pageBtn("Next ›", constraintsPage + 1, { disabled: constraintsPage >= pageCount - 1 }));
 }
 
 function constraintFields(c) {
