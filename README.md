@@ -28,7 +28,7 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 **Working today (the base):**
 
 - The CP-SAT solver — schedules across a custom **horizon** (one 24h day by default, or several
-  days) + the editable JSON IR and its 7 constraint types.
+  days) + the editable JSON IR and its 10 constraint types.
 - The timeline (Gantt) — **swimlanes**, lane-packed (non-overlapping tasks share a row), **colored by
   activity kind** (sleep/meal/exercise/EVA/comms/ops) with a legend, clean labels with full detail on
   hover, night/comms shading, and a draggable mission-elapsed cursor. A **Group by** picker re-lanes
@@ -141,6 +141,16 @@ call; `enabled` toggles a rule without losing its numbers. The constraint types 
 - `section_budget` — a time **budget** for a `section`: the total busy minutes of every activity in
   that section must stay within `max_minutes`. It bounds a sum, not placement, so it only makes a
   plan infeasible when the cap is below the section's fixed total work.
+- `time_lag` — a min/max **time lag** between two activities (the standard RCPSP "generalized
+  precedence"). The gap is measured from an anchor (`start` or `end`) on `from_id` to an anchor on
+  `to_id`, then bounded by `min_lag` and/or `max_lag` (minutes; at least one required). One type
+  covers many rules: *X immediately before Y* (adjacency: end→start, min=max=0), *meals ≤ 6h apart*
+  (max-gap: `max_lag` 360), *awake ≤ 16h30m* (a span cap). `day_shift` offsets which day is paired
+  for recurring activities — `day_shift` 1 links a night-N activity to the next morning (the
+  cross-midnight case).
+- `min_separation` — keep two activities (`a`, `b`) at least `gap` minutes apart, in **either**
+  order. Unlike `no_overlap` (which lets activities touch, end == start), this forces a real buffer
+  — e.g. *exercise ≥ 30m from a meal*, *≥ 10m between every activity*.
 
 An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP) an optional
 **`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized
@@ -156,9 +166,11 @@ An activity can also set **`recurs_daily: true`** (with an optional **`daily_win
 and a `days` filter): the solver then *expands* it into **one occurrence per day** across the horizon,
 each clamped to its own day. So one `lunch` with a `daily_window` of `11:00–14:00` lands once on every
 mission day — no precedence wiring — instead of all the meals piling onto day 1. This is how the
-multi-day demo gets a real daily rhythm. (Recurring activities are standalone rhythm: they can't be
-named by `precedence`/`sequence`/`no_overlap`/`time_window`/`conditional`, which match the source id —
-only the per-day occurrences, e.g. `lunch#d2`, exist in the solve.)
+multi-day demo gets a real daily rhythm. Relative-timing constraints (`precedence`, `overlap`,
+`time_lag`, `min_separation`) now **pair recurring activities per day** — resolved through the
+per-day occurrence keys — so a rule on a daily activity applies on every day instead of being
+silently skipped. (Constraints that pin one absolute id — `time_window`, `conditional` — still match
+the source id, which only the per-day occurrences, e.g. `lunch#d2`, expand from.)
 
 Activities run free across the planning **horizon** — one 24h day by default, or set
 `"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity

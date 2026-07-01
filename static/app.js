@@ -128,6 +128,8 @@ addConstraintType("sequence", "Sequence (ordered)");
 addConstraintType("working_window", "Working window (open hours)");
 addConstraintType("section_budget", "Section budget (max minutes)");
 addConstraintType("overlap", "Overlap (one runs during another)");
+addConstraintType("time_lag", "Time lag (min/max gap between two)");
+addConstraintType("min_separation", "Min separation (buffer apart)");
 
 $("parse-btn").onclick = () =>
   withBusy($("parse-btn"), "Parsing…", async () => {
@@ -756,6 +758,14 @@ function newConstraint(type) {
     return { ...base, before: a0, after: a1 };
   if (type === "overlap")
     return { ...base, outer: a0, inner: a1, mode: "contains" };
+  if (type === "time_lag")
+    // Seed as adjacency (end→start, 0..0) — the most common use and, crucially, VALID on its own so
+    // the live solve doesn't error the instant you add the rule (the IR needs >=1 bound). Adjust from there.
+    return { ...base, from_id: a0, to_id: a1, from_anchor: "end", to_anchor: "start",
+      min_lag: 0, max_lag: 0, day_shift: 0 };
+  if (type === "min_separation")
+    // A real buffer (minutes > 0) kept in either order; seed a small non-zero gap so it's valid.
+    return { ...base, a: a0, b: a1, gap: 30, day_shift: 0 };
   if (type === "no_overlap")
     return { ...base, activities: "all" };
   if (type === "sequence") {
@@ -1527,6 +1537,7 @@ const CON_TYPE_LABEL = {
   time_window: "Time window", no_overlap: "No overlap", precedence: "Precedence",
   sequence: "Sequence", conditional: "Conditional", working_window: "Working window",
   section_budget: "Section budget", overlap: "Overlap",
+  time_lag: "Time lag", min_separation: "Min separation",
 };
 function constraintTypeLabel(t) { return CON_TYPE_LABEL[t] || t; }
 // Type -> tint color (a CSS var string), used as the card's --cat border/wash. Mirrors the old
@@ -1535,6 +1546,7 @@ const CON_TYPE_COLOR = {
   time_window: "var(--accent)", working_window: "var(--accent)", precedence: "var(--ok)",
   sequence: "var(--warn)", conditional: "var(--violet)", no_overlap: "var(--muted)",
   section_budget: "var(--warn)", overlap: "var(--violet)",
+  time_lag: "var(--ok)", min_separation: "var(--violet)",
 };
 function constraintTypeColor(t) { return CON_TYPE_COLOR[t] || "var(--muted)"; }
 
@@ -1573,6 +1585,23 @@ function constraintSummary(c) {
   }
   if (c.type === "section_budget") {
     return (c.section || "—") + " · ≤ " + dur(c.max_minutes || 0);
+  }
+  if (c.type === "time_lag") {
+    // e.g. "EVA prep → EVA: 0–0 min (end→start)" — show whatever bound(s) are set.
+    const lo = c.min_lag, hi = c.max_lag;
+    let range;
+    if (lo != null && hi != null) range = lo === hi ? String(lo) : lo + "–" + hi;
+    else if (lo != null) range = "≥ " + lo;
+    else if (hi != null) range = "≤ " + hi;
+    else range = "any"; // neither set yet (invalid until one is)
+    const anchors = (c.from_anchor || "end") + "→" + (c.to_anchor || "start");
+    const shift = c.day_shift ? ` +${c.day_shift}d` : "";
+    return (c.from_id || "—") + " → " + (c.to_id || "—") + ": " + range + " min (" + anchors + ")" + shift;
+  }
+  if (c.type === "min_separation") {
+    // e.g. "exercise ≥30 min from lunch"
+    const shift = c.day_shift ? ` +${c.day_shift}d` : "";
+    return (c.a || "—") + " ≥ " + (c.gap || 0) + " min from " + (c.b || "—") + shift;
   }
   return c.type;
 }
@@ -1725,6 +1754,34 @@ function constraintFields(c) {
       { value: "contains", label: "outer fully covers inner (during)" },
       { value: "overlaps", label: "intervals merely overlap" },
     ], (v) => (c.mode = v)));
+  } else if (c.type === "time_lag") {
+    // lag = (to_anchor of to) − (from_anchor of from), bounded by [min_lag, max_lag].
+    f.push(activitySelect("from", c.from_id, (v) => (c.from_id = v)));
+    f.push(activitySelect("to", c.to_id, (v) => (c.to_id = v)));
+    f.push(selectField("from anchor", c.from_anchor || "end", [
+      { value: "start", label: "start of from" },
+      { value: "end", label: "end of from" },
+    ], (v) => (c.from_anchor = v)));
+    f.push(selectField("to anchor", c.to_anchor || "start", [
+      { value: "start", label: "start of to" },
+      { value: "end", label: "end of to" },
+    ], (v) => (c.to_anchor = v)));
+    // Blank = no bound (null); at least one of min/max must be set for the rule to do anything.
+    f.push(textField("min lag (min, blank = none)", c.min_lag == null ? "" : String(c.min_lag),
+      (v) => { const n = parseInt(v, 10); c.min_lag = v.trim() === "" || !Number.isFinite(n) ? null : n; }));
+    f.push(textField("max lag (min, blank = none)", c.max_lag == null ? "" : String(c.max_lag),
+      (v) => { const n = parseInt(v, 10); c.max_lag = v.trim() === "" || !Number.isFinite(n) ? null : n; }));
+    f.push(textField("day shift (0 = same day)", c.day_shift == null ? "0" : String(c.day_shift),
+      (v) => { const n = parseInt(v, 10); c.day_shift = Number.isFinite(n) ? n : 0; }));
+    if (c.min_lag == null && c.max_lag == null)
+      f.push(makeEl("p", "Set at least one of min/max lag for this rule to take effect.", "hint"));
+  } else if (c.type === "min_separation") {
+    // Keep a and b at least `gap` minutes apart, in either order (a real buffer).
+    f.push(activitySelect("activity A", c.a, (v) => (c.a = v)));
+    f.push(activitySelect("activity B", c.b, (v) => (c.b = v)));
+    f.push(numField("gap (minutes apart)", c.gap, (v) => { if (Number.isFinite(v) && v > 0) c.gap = v; }));
+    f.push(textField("day shift (0 = same day)", c.day_shift == null ? "0" : String(c.day_shift),
+      (v) => { const n = parseInt(v, 10); c.day_shift = Number.isFinite(n) ? n : 0; }));
   } else if (c.type === "no_overlap") {
     const isAll = c.activities === "all" || c.activities == null;
     f.push(selectField("applies to", isAll ? "all" : "specific", [

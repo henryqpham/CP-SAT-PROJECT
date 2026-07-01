@@ -163,9 +163,61 @@ class SectionBudget(_Constraint):
         return v
 
 
+class TimeLag(_Constraint):
+    # A relative-timing bound between two activities — RCPSP "generalized precedence" / min-max time
+    # lag. The lag is (to_anchor of to_id) minus (from_anchor of from_id), in minutes; min_lag/max_lag
+    # bound it (at least one is required). One parametric type covers several real rules:
+    #   "X immediately before Y" (adjacency) -> from_anchor end, to_anchor start, min_lag=max_lag=0
+    #   "meals <= 6h apart" (max-gap)        -> end->start, max_lag=360
+    #   "awake <= 16h30m wake->pre-sleep"    -> end(sleep)->start(pre_sleep), max_lag=990
+    # On RECURRING activities the solver pairs occurrences by day; day_shift offsets to_id's day so
+    # day_shift=1 pairs from_id's night-N occurrence with to_id's day-(N+1) one (the cross-midnight
+    # case). A reference to a missing/dropped activity makes the bound vacuous, never infeasible.
+    type: Literal["time_lag"] = "time_lag"
+    from_id: str
+    to_id: str
+    from_anchor: Literal["start", "end"] = "end"
+    to_anchor: Literal["start", "end"] = "start"
+    min_lag: Optional[int] = None  # minutes; lag must be >= this
+    max_lag: Optional[int] = None  # minutes; lag must be <= this
+    day_shift: int = 0             # pair from_id#dN with to_id#d(N+day_shift) for recurring activities
+
+    @model_validator(mode="after")
+    def _check_lags(self):
+        if self.min_lag is None and self.max_lag is None:
+            raise ValueError("time_lag needs at least one of min_lag / max_lag")
+        if (self.min_lag is not None and self.max_lag is not None
+                and self.min_lag > self.max_lag):
+            raise ValueError("time_lag min_lag must be <= max_lag")
+        return self
+
+
+class MinSeparation(_Constraint):
+    # Keep two activities at least `gap` minutes apart, in EITHER order (a both-directions
+    # disjunction). Unlike no_overlap — which lets intervals touch (end == start) — this forces a real
+    # gap, e.g. "exercise >= 30m from any meal", ">= 10m buffer between two tasks". On recurring
+    # activities the solver pairs occurrences by day (day_shift offsets like TimeLag). A reference to
+    # a missing/dropped activity makes it vacuous.
+    type: Literal["min_separation"] = "min_separation"
+    a: str
+    b: str
+    gap: int           # minutes; must be > 0
+    day_shift: int = 0
+
+    @field_validator("gap")
+    @classmethod
+    def _check_gap(cls, v):
+        if v <= 0:
+            raise ValueError("min_separation gap must be a positive number of minutes")
+        return v
+
+
 # The discriminated union: pick the variant by its "type" field.
 Constraint = Annotated[
-    Union[TimeWindow, NoOverlap, Precedence, Sequence, Conditional, WorkingWindow, SectionBudget, Overlap],
+    Union[
+        TimeWindow, NoOverlap, Precedence, Sequence, Conditional,
+        WorkingWindow, SectionBudget, Overlap, TimeLag, MinSeparation,
+    ],
     Field(discriminator="type"),
 ]
 

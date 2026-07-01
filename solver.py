@@ -45,12 +45,20 @@ def solve(scenario: Scenario) -> dict:
                 if hi - lo >= a.duration:  # skip a day whose window can't hold the activity
                     occurrences.append({"id": f"{a.id}#d{d + 1}", "src": a.id,
                                         "duration": a.duration, "section": a.section,
-                                        "lo": lo, "hi": hi})
+                                        "lo": lo, "hi": hi, "day": d})
         else:
             occurrences.append({"id": a.id, "src": a.id, "duration": a.duration,
-                                "section": a.section, "lo": 0, "hi": horizon})
+                                "section": a.section, "lo": 0, "hi": horizon, "day": None})
 
     base_duration = {o["id"]: o["duration"] for o in occurrences}
+
+    # Map each activity id to its occurrences (a one-off has one; a recurring activity has one per
+    # PLACED day, in day order). Relative-timing constraints resolve their endpoints through this so a
+    # rule naming a recurring activity by its bare id no longer silently no-ops (the exact bug that let
+    # a rule vanish while the plan still solved OPTIMAL).
+    occ_by_src = {}
+    for occ in occurrences:
+        occ_by_src.setdefault(occ["src"], []).append(occ)
 
     # Look through the conditionals once to find two things:
     #   - which activities are OPTIONAL (named in a conditional's "when"), and
@@ -205,10 +213,37 @@ def solve(scenario: Scenario) -> dict:
         else:
             model.minimize(tidy)
 
+    def occ_pairs(a_id, b_id, day_shift=0):
+        # Aligned (a_occ_id, b_occ_id) pairs for a relative-timing constraint between two activity
+        # ids. A one-off id yields its single key; recurring ids pair by day index (day_shift offsets
+        # b's day, so day_shift=1 links a's night-N occurrence to b's day-(N+1) one — the cross-midnight
+        # case). A mixed one-off/recurring pair ties the one-off to every occurrence. Unknown or fully
+        # dropped ids yield no pairs (the constraint is vacuous).
+        a_occs = occ_by_src.get(a_id, [])
+        b_occs = occ_by_src.get(b_id, [])
+        if not a_occs or not b_occs:
+            return []
+        a_recurs = a_occs[0]["day"] is not None
+        b_recurs = b_occs[0]["day"] is not None
+        if a_recurs and b_recurs:
+            b_by_day = {o["day"]: o for o in b_occs}
+            pairs = []
+            for o in a_occs:
+                partner = b_by_day.get(o["day"] + day_shift)
+                if partner is not None:
+                    pairs.append((o["id"], partner["id"]))
+            return pairs
+        if not a_recurs and not b_recurs:
+            return [(a_occs[0]["id"], b_occs[0]["id"])]
+        if a_recurs:
+            return [(o["id"], b_occs[0]["id"]) for o in a_occs]
+        return [(a_occs[0]["id"], o["id"]) for o in b_occs]
+
     def add_precedence(before, after):
-        # `before` ends before `after` starts; skip unless both are real activities.
-        if before in ends and after in starts:
-            model.add(ends[before] <= starts[after])
+        # `before` ends before `after` starts, paired per day for recurring activities (a bare
+        # recurring id used to be silently skipped — a rule that vanished yet the plan still solved).
+        for a_oid, b_oid in occ_pairs(before, after):
+            model.add(ends[a_oid] <= starts[b_oid])
 
     for c in scenario.constraints:
         if not c.enabled:
@@ -281,18 +316,45 @@ def solve(scenario: Scenario) -> dict:
                     add_precedence(before, after)
 
         elif c.type == "overlap":
-            # Tie two activities together in time. Like add_precedence, skip unless BOTH are real
-            # one-off ids (a bare recurring id won't be in starts — its key is "<id>#d<n>"). The
+            # Tie two activities together in time, paired per day for recurring activities. The
             # relation is on the start/end vars, NOT gated by presence: if `inner` is an optional
             # activity that gets dropped, the bound becomes vacuous rather than infeasible (same as
-            # precedence on an optional) — fine here since neither overlap target is droppable.
-            if c.outer in starts and c.inner in starts:
+            # precedence on an optional).
+            for a_oid, b_oid in occ_pairs(c.outer, c.inner):
                 if c.mode == "contains":
-                    model.add(starts[c.outer] <= starts[c.inner])  # outer fully covers inner
-                    model.add(ends[c.inner] <= ends[c.outer])
+                    model.add(starts[a_oid] <= starts[b_oid])  # outer fully covers inner
+                    model.add(ends[b_oid] <= ends[a_oid])
                 else:  # "overlaps": the two intervals share at least one minute
-                    model.add(starts[c.outer] < ends[c.inner])
-                    model.add(starts[c.inner] < ends[c.outer])
+                    model.add(starts[a_oid] < ends[b_oid])
+                    model.add(starts[b_oid] < ends[a_oid])
+
+        elif c.type == "time_lag":
+            # A relative-timing bound: lag = (to_anchor of to_id) - (from_anchor of from_id) minutes.
+            # Plain model.add on the start/end vars (no presence gating), so a dropped endpoint floats
+            # to satisfy the bound — vacuous, never infeasible. Recurring endpoints pair per day.
+            for a_oid, b_oid in occ_pairs(c.from_id, c.to_id, c.day_shift):
+                a_var = ends[a_oid] if c.from_anchor == "end" else starts[a_oid]
+                b_var = starts[b_oid] if c.to_anchor == "start" else ends[b_oid]
+                lag = b_var - a_var
+                if c.min_lag is not None:
+                    model.add(lag >= c.min_lag)
+                elif c.max_lag is not None:
+                    # A bare max-gap implies "to_id comes after from_id"; without this the solver could
+                    # place to_id earlier (a negative lag) and satisfy the cap trivially.
+                    model.add(lag >= 0)
+                if c.max_lag is not None:
+                    model.add(lag <= c.max_lag)
+
+        elif c.type == "min_separation":
+            # Keep the pair >= gap apart in EITHER order (a both-directions disjunction; a single
+            # inequality would secretly force an order and could make a feasible plan infeasible). Gate
+            # both directions on the activities' presence lits so a dropped optional activity makes it
+            # vacuous. Recurring activities pair per day.
+            for a_oid, b_oid in occ_pairs(c.a, c.b, c.day_shift):
+                lits = [p for p in (presence.get(a_oid), presence.get(b_oid)) if p is not None]
+                order = model.new_bool_var(f"sep_{c.id}_{a_oid}_{b_oid}")
+                model.add(starts[b_oid] >= ends[a_oid] + c.gap).only_enforce_if([order] + lits)
+                model.add(starts[a_oid] >= ends[b_oid] + c.gap).only_enforce_if([order.Not()] + lits)
 
         elif c.type == "section_budget":
             # Total busy minutes in the section must stay within the cap. Sum each member
