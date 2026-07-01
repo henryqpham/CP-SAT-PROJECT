@@ -501,6 +501,17 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   font-size: 0.9rem;
 }
 
+/* transient success toast (bottom-center) — separate from the red .alert error banner */
+.toast {
+  position: fixed; left: 50%; bottom: 1.2rem; transform: translateX(-50%) translateY(0.4rem);
+  z-index: 50; pointer-events: none;
+  background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-border);
+  border-radius: var(--radius-pill); padding: 0.4rem 0.9rem;
+  font-size: 0.82rem; font-weight: 600;
+  opacity: 0; transition: opacity var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 /* gantt */
 .gantt {
   position: relative; /* the now-line is positioned against this */
@@ -526,6 +537,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 }
 .gantt-track { position: relative; flex: 1; height: 1.7rem; }
 .gantt-axis .gantt-track { height: 1.1rem; }
+/* keep the time ruler pinned to the top when the chart scrolls vertically (many lanes). z-index sits
+   below the .now-line (4) so the playhead still draws over the ruler, like a video-editor timeline. */
+.gantt-axis { position: sticky; top: 0; z-index: 3; background: var(--glass-dense); box-shadow: 0 1px 0 var(--border); }
 .lane {
   background: var(--track);
   border-radius: 5px;
@@ -619,6 +633,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .bar.selected:hover { filter: brightness(1.08); transform: translateY(-1px); }
 /* Bars that finish close to their deadline: within ~15 min (snug) or ~5 min (tight). */
 .bar-snug { outline: 2px solid var(--warn); outline-offset: -2px; }
+/* legend key for the tight/snug deadline outline (a small amber-outlined box) */
+.legend-swatch.legend-tight { background: transparent; outline: 2px solid var(--warn); outline-offset: -2px; }
 .bar-tight {
   outline: 2px solid var(--bad);
   outline-offset: -2px;
@@ -939,6 +955,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .lt-add { white-space: nowrap; }
 .lt-add-btn { background: var(--accent); color: #fff; border-color: transparent; padding: 0.18rem 0.6rem; }
 .lt-add-btn:hover { background: var(--accent-hover); }
+/* the row Edit button — a proper secondary control next to the primary "+ Add" */
+.lt-edit-btn { background: var(--surface-2); color: var(--ink); }
+.lt-edit-btn:hover { background: var(--surface-3); }
 .lt-add .del { margin-left: 0.35rem; vertical-align: middle; }
 
 /* constraints table: reuses the library table shell (.lib-table / .lt-row) with its own columns */
@@ -991,6 +1010,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 /* At 1x the gantt fits the panel (today's view). Zooming X widens it past the panel and the canvas
    scrolls horizontally; row labels pin to the left so you never lose the row. Y scales lane height. */
 .gantt-scroll { overflow: auto; max-height: 72vh; border-radius: var(--radius-sm); }
+/* placeholder shown in the timeline panel when there's no plan / no feasible arrangement to draw */
+.timeline-empty { margin: 2.5rem 0.5rem; text-align: center; color: var(--muted); font-size: 0.92rem; }
 .gantt-track.lane { height: calc(1.7rem * var(--zoom-y, 1)); }
 .gantt-label { position: sticky; left: 0; } /* engages only once the canvas scrolls (zoom > 1) */
 .gantt-zoomed .gantt-label { background: var(--surface-1); z-index: 5; box-shadow: 1px 0 0 var(--border); }

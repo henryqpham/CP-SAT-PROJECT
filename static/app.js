@@ -256,6 +256,7 @@ function addCustomTemplate() {
   $("lib-new-section").value = "";
   $("lib-new-min").value = "30";
   renderLibraryList();
+  flash(`Saved “${name}” to library`);
   $("lib-new-name").focus();
 }
 // Typing a known category prefills its color + icon (so you edit, not overwrite, its styling).
@@ -281,6 +282,9 @@ function solvePayload() {
 // manual "Solve now" button and by the debounced live auto-solve below.
 function solveNow() {
   saveTabs(); // persist the current plan into its tab before solving
+  // Reflect the in-flight solve on the status pill so it never shows a stale (possibly wrong) result.
+  const _pill = $("status");
+  if (_pill) { _pill.textContent = "SOLVING…"; _pill.className = "pill pill-warn"; }
   return withBusy($("solve-btn"), "Solving…", async () => {
     renderResult(await post("/solve", solvePayload()));
   });
@@ -305,12 +309,21 @@ function scheduleSolve() {
 
 // Wipe the result UI back to its empty state: no timeline, no health strip, no status pill, and
 // forget the last good schedule so a fresh plan doesn't show a stale "last good plan".
+// A friendly placeholder for the timeline panel when there's nothing to draw (empty plan, or a plan
+// that can't be solved), so the center panel never reads as "broken" during a demo.
+function showTimelinePlaceholder(msg) {
+  const tl = $("timeline");
+  if (!tl) return;
+  tl.innerHTML = "";
+  tl.append(makeEl("p", msg, "timeline-empty"));
+}
+
 function clearResult() {
   lastFeasibleSchedule = null;
   shownSchedule = null;
   shownStale = false;
   solvedHorizon = DAY;
-  $("timeline").innerHTML = "";
+  showTimelinePlaceholder("No plan yet — open Browse Library to add activities.");
   $("health").hidden = true;
   $("banner").hidden = true;
   const pill = $("status");
@@ -346,6 +359,7 @@ $("con-search").oninput = (e) => { conSearch = e.target.value; constraintsPage =
 function openConstraintsList() {
   $("constraints-modal").hidden = false; // show first, so the grid has a measurable size
   renderConstraints();
+  $("con-search").focus(); // move keyboard focus into the dialog
 }
 function closeConstraintsList() {
   $("constraints-modal").hidden = true;
@@ -374,6 +388,7 @@ function openEditConstraintModal(c) {
   $("constraint-commit").textContent = "Save";
   renderConstraintDraft();
   $("constraint-modal").hidden = false;
+  $("add-constraint-type").focus(); // move keyboard focus into the dialog
 }
 function closeAddConstraintModal() {
   $("constraint-modal").hidden = true;
@@ -408,9 +423,11 @@ function commitDraftConstraint() {
   } else {
     scenario.constraints.push(draftConstraint);
   }
+  const _edited = !!editingConstraintId;
   draftConstraint = null;
   closeAddConstraintModal();
   render();
+  flash(_edited ? "Constraint updated" : "Constraint added");
 }
 
 // Ctrl/Cmd+Enter parses from the text box (the AI input is hidden for now, but still wired up).
@@ -515,6 +532,8 @@ function newTab() {
 }
 function deleteTab(i) {
   if (tabs.length <= 1) return; // always keep at least one plan
+  // This wipes the plan AND resets undo (see below), so it's unrecoverable — confirm first.
+  if (!confirm(`Delete plan "${tabs[i].name}"? This can't be undone.`)) return;
   tabs.splice(i, 1);
   if (i < activeTab || activeTab >= tabs.length) activeTab = Math.max(0, activeTab - 1);
   scenario = clone(tabs[activeTab].scenario);
@@ -573,12 +592,14 @@ function undo() {
   histRedo.push(histPresent);
   histPresent = histUndo.pop();
   applyHistory();
+  flash("Undone");
 }
 function redo() {
   if (!histRedo.length) return;
   histUndo.push(histPresent);
   histPresent = histRedo.pop();
   applyHistory();
+  flash("Redone");
 }
 // Swap the live scenario to histPresent and refresh everything (render() re-solves). recordHistory
 // fires from that render but no-ops, since scenario now equals histPresent.
@@ -715,6 +736,19 @@ function clearAlert() {
   const a = $("alert");
   a.hidden = true;
   a.textContent = "";
+}
+
+// A brief, non-blocking success toast (bottom-center) — separate from the red #alert error banner, so
+// a positive action (add / save / undo) gets visible confirmation without hijacking the error slot.
+let _toastTimer = null;
+function flash(msg) {
+  const t = $("toast");
+  if (!t) return;
+  t.textContent = msg;
+  t.hidden = false;
+  t.classList.add("show");
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { t.classList.remove("show"); t.hidden = true; }, 1600);
 }
 
 // ---- IR helpers ---------------------------------------------------------
@@ -878,7 +912,9 @@ function renderRoster() {
       const sw = makeEl("span", "", "roster-swatch");
       sw.style.background = colorFor(a.id);
       row.append(sw);
-      row.append(makeEl("span", a.id, "roster-name"));
+      const nameEl = makeEl("span", prettify(a.id), "roster-name"); // match the timeline's labels
+      nameEl.title = a.id; // keep the exact id available on hover
+      row.append(nameEl);
       row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
       const s = shownSchedule && shownSchedule.find((x) => sourceId(x.id) === a.id);
       row.append(makeEl("span", s ? `${timeLabel(s.start)}–${timeLabel(s.end)}` : "—", "roster-time"));
@@ -1058,6 +1094,10 @@ function closeLibrary() {
 // activity selection (a bar or roster-row click), never on the debounced auto-solve redraw.
 function openInspector() {
   $("inspector-modal").hidden = false;
+  // Move focus into the dialog (first field if the inspector is already rendered, else the close button).
+  const m = $("inspector-modal");
+  const focusable = m.querySelector("#inspector input, #inspector select, #inspector button") || m.querySelector(".modal-close");
+  if (focusable) focusable.focus();
 }
 function closeInspector() {
   $("inspector-modal").hidden = true;
@@ -1312,6 +1352,7 @@ function libEditRowEl(tpl) {
     saveTemplates();
     libEditing = null;
     renderLibraryList();
+    flash(`Saved “${label}”`);
   };
   const cancel = () => { libEditing = null; renderLibraryList(); };
 
@@ -1366,6 +1407,7 @@ function libRowEl(tpl) {
     pushRecent(tpl.label);
     render(); // roster + (debounced) timeline update; modal stays open
     renderLibraryList(); // refresh the "in plan" counts
+    flash(`Added “${tpl.label}”`);
   };
   actTd.append(add);
   // Edit any activity (seed or saved). Editing a seed saves an editable copy that shadows it.
@@ -1547,7 +1589,9 @@ function renderInspector() {
   // schedule, so we ignore a blank and keep the old id.
   const idField = labeledField("id", textInput(act.id, (v) => {
     const next = v.trim();
-    if (next) {
+    // Ignore blank, and reject an id already used by ANOTHER activity — a collision would make two
+    // activities share an id (one bar drawn for two, and constraints would point at the wrong one).
+    if (next && !scenario.activities.some((a) => a !== act && a.id === next)) {
       act.id = next;
       selectedId = next;
     }
@@ -1556,7 +1600,7 @@ function renderInspector() {
 
   // duration (minutes) + section (blank = Ungrouped) — both mutate + re-solve.
   box.append(numField("duration (min)", act.duration, (v) => {
-    if (!Number.isNaN(v)) act.duration = v;
+    if (Number.isInteger(v) && v >= 1) act.duration = v; // reject 0 / negative / blank, like the Library
   }));
   box.append(textField("section", act.section || "", (v) => (act.section = v.trim() || null)));
 
@@ -1953,7 +1997,7 @@ function renderResult(result) {
       drawTimeline(lastFeasibleSchedule, true);
     } else {
       renderHealth(status, null, false);
-      $("timeline").innerHTML = "";
+      showTimelinePlaceholder("No arrangement satisfies these rules yet — open “Manage constraints” to loosen a rule, or use “Which rules conflict?”.");
     }
     return;
   }
@@ -2040,7 +2084,10 @@ function drawTimeline(schedule, stale) {
   shownStale = stale;
   const tl = $("timeline");
   tl.innerHTML = "";
-  if (!schedule || !schedule.length) return;
+  if (!schedule || !schedule.length) {
+    showTimelinePlaceholder("No plan yet — open Browse Library to add activities.");
+    return;
+  }
   const g = buildGantt(schedule);
   if (stale) g.classList.add("gantt-stale");
   else renderTightness(g, schedule);
@@ -2049,7 +2096,7 @@ function drawTimeline(schedule, stale) {
   scroll.className = "gantt-scroll"; // scrolls horizontally when zoomed in past the panel width
   scroll.append(g);
   tl.append(scroll);
-  const leg = buildLegend();
+  const leg = buildLegend(g);
   if (leg) tl.append(leg);
   tagNarrowBars(tl); // now that the bars are laid out, hide labels on bars too small for text
   renderNowLine(); // the draggable mission-elapsed cursor, positioned over the laid-out tracks
@@ -2098,10 +2145,14 @@ function positionNowLine(g) {
   const { t0, span } = axisCtx;
   const frac = span > 0 ? (cursorMin - t0) / span : 0;
   const x = track.offsetLeft + frac * track.offsetWidth;
-  const first = rows[0], last = rows[rows.length - 1];
+  // Span the playhead from the time axis (ruler) down through the last lane, so it reads like a
+  // video-editor playhead connecting the ruler to the bars — not just the lane area.
+  const axis = g.querySelector(".gantt-axis");
+  const top = axis ? axis.offsetTop : rows[0].offsetTop;
+  const last = rows[rows.length - 1];
   line.style.left = x + "px";
-  line.style.top = first.offsetTop + "px";
-  line.style.height = (last.offsetTop + last.offsetHeight - first.offsetTop) + "px";
+  line.style.top = top + "px";
+  line.style.height = (last.offsetTop + last.offsetHeight - top) + "px";
   const lbl = line.querySelector(".now-label");
   if (lbl) lbl.textContent = timeLabel(Math.round(cursorMin));
 }
@@ -2183,9 +2234,8 @@ function applyZoom() {
 
 // A small legend of the activity KINDS in the drawn plan (swatch + icon -> label), plus a note that
 // the lane axis encodes crew (or section). Colors come from the same --kind-* vars the bars use.
-function buildLegend() {
+function buildLegend(g) {
   const used = [...new Set((shownSchedule || []).map((s) => kindOf(s)))];
-  if (!used.length) return null;
   const order = Object.keys(KINDS);
   used.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const leg = document.createElement("div");
@@ -2201,6 +2251,23 @@ function buildLegend() {
     item.append(makeEl("span", def.label || k));
     leg.append(item);
   }
+  // Also key the shading bands + tight-deadline outline, but only when they're actually on screen
+  // this draw, so the legend explains the greys/washes without listing cues that aren't shown.
+  const cue = (bg, label, extraCls) => {
+    const item = makeEl("span", "", "legend-item");
+    const sw = makeEl("span", "", "legend-swatch" + (extraCls ? " " + extraCls : ""));
+    if (bg) sw.style.background = bg;
+    item.append(sw);
+    item.append(makeEl("span", label));
+    leg.append(item);
+  };
+  if (g) {
+    if (g.querySelector(".night-band")) cue("var(--night-band)", "night / sleep");
+    if (g.querySelector(".comms-band")) cue("var(--comms-band)", "comms window");
+    if (g.querySelector(".closed-band")) cue("var(--closed-fill)", "closed hours");
+    if (g.querySelector(".bar-tight, .bar-snug")) cue(null, "tight deadline", "legend-tight");
+  }
+  if (!leg.children.length) return null;
   leg.append(makeEl("span", "lane = " + groupMode, "legend-note"));
   return leg;
 }
