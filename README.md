@@ -67,6 +67,8 @@ endpoints:
 - **`/solve`** — takes the IR and returns a schedule from CP-SAT.
 - **`/explain`** — for an INFEASIBLE plan, returns the minimal set of conflicting constraint ids
   (deletion filtering: drop each rule and re-solve). Called on demand, not in the live solve loop.
+- **`/relax`** — for an INFEASIBLE plan, greedily drops the **lowest-priority** rules in the conflict
+  (never a priority-1 rule) until it solves. On-demand, next to `/explain`.
 - **`/example[/<name>]`** — returns a hand-written demo scenario; `/examples` lists them.
 - **`/parse`** — the old sentence-to-JSON route, kept but **dormant** (AI is off for now).
 
@@ -95,7 +97,7 @@ rule, watch it react — in any order.
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
+├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /relax (drop lowest-priority rules), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
 ├── models.py            # Pydantic IR: Activity (+ section, + display-only assignee/type) + constraint union — the JSON contract
 ├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
@@ -119,7 +121,11 @@ CP-SAT-PROJECT/
 ## The intermediate format (IR)
 
 One typed JSON document you build and edit by hand. Each constraint `type` maps 1:1 to a CP-SAT
-call; `enabled` toggles a rule without losing its numbers. The constraint types are:
+call; `enabled` toggles a rule without losing its numbers. Every constraint also carries a
+**`priority`** (1..5, default 1 — 1 = hardest / inviolable, 5 = casual preference) and a
+**`rationale`** (free text — the human "why"). Priority does **not** change the live solve — every
+enabled rule is still enforced hard there. It only tells the on-demand `/relax` which rules it may
+drop (never a priority-1 rule) to make an INFEASIBLE plan fit. The constraint types are:
 
 - `time_window` — an `earliest` start and/or `latest_end` (`"HH:MM"`) for one `activity`. An optional
   `day` (0-based) puts the clock on a chosen mission day, so multi-day deadlines work: *`latest_end`

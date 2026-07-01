@@ -12,7 +12,7 @@ from pydantic import ValidationError  # noqa: E402
 
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
-from solver import explain_infeasible, solve  # noqa: E402
+from solver import explain_infeasible, relax_by_priority, solve  # noqa: E402
 
 app = Flask(__name__)
 # Dev: don't let the browser cache static JS/CSS, so code edits show on a normal refresh
@@ -92,6 +92,15 @@ def explain_route():
     if err:
         return err
     return jsonify(explain_infeasible(scenario))
+
+
+@app.post("/relax")
+def relax_route():
+    # On-demand priority-ordered relaxation: which LOWEST-priority rules to drop to make it solve.
+    scenario, err = _scenario_or_error(request.get_json(silent=True))
+    if err:
+        return err
+    return jsonify(relax_by_priority(scenario))
 
 
 if __name__ == "__main__":

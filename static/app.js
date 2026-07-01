@@ -606,6 +606,7 @@ function redo() {
 function applyHistory() {
   scenario = JSON.parse(histPresent);
   selectedId = null;
+  relaxedIds.clear(); // the plan changed — clear stale relaxed marks
   lastFeasibleSchedule = null; // undo/redo swaps the whole plan; don't keep the other state's bars
   resetRosterFilter();
   saveTabs();
@@ -785,7 +786,7 @@ function newConstraint(type) {
   const a1 = scenario.activities[1]?.id || a0;
   // No baked-in numbers or titles: times start empty, the scale factor is the no-op 1, and the
   // label starts blank. The activity refs just point at whatever's already in the plan.
-  const base = { id: uniqueConstraintId(), type, enabled: true, source: "", label: "" };
+  const base = { id: uniqueConstraintId(), type, enabled: true, source: "", label: "", priority: 3, rationale: "" };
   if (type === "time_window")
     return { ...base, activity: a0, earliest: null, latest_end: null, day: null };
   if (type === "precedence")
@@ -1736,7 +1737,7 @@ function conChip(value, label, count, active) {
 function conTableHead() {
   const thead = document.createElement("thead");
   const tr = document.createElement("tr");
-  for (const [label, cls] of [["Rule", "lt-name"], ["Type", "con-type"], ["Details", "con-sum"],
+  for (const [label, cls] of [["Rule", "lt-name"], ["Type", "con-type"], ["Pri", "con-pri"], ["Details", "con-sum"],
     ["On", "con-on"], ["", "lt-add"]]) {
     tr.append(makeEl("th", label, cls));
   }
@@ -1748,9 +1749,11 @@ function conTableHead() {
 // type-colored left edge + dot, the type, a plain-English summary, an enable toggle, then Edit +
 // delete. Editing happens in the add-constraint popup (EDIT mode).
 function conRowEl(c) {
+  const relaxed = relaxedIds.has(c.id);
   const tr = document.createElement("tr");
-  tr.className = "lt-row con-row" + (c.enabled === false ? " off" : "");
+  tr.className = "lt-row con-row" + (c.enabled === false ? " off" : "") + (relaxed ? " relaxed" : "");
   tr.style.setProperty("--cat", constraintTypeColor(c.type));
+  if (c.rationale) tr.title = c.rationale; // hover shows the WHY
 
   const nameTd = makeEl("td", "", "lt-name");
   nameTd.append(makeEl("span", "", "lt-dot"));
@@ -1758,6 +1761,10 @@ function conRowEl(c) {
   tr.append(nameTd);
 
   tr.append(makeEl("td", constraintTypeLabel(c.type), "con-type"));
+  const priTd = makeEl("td", "", "con-pri");
+  priTd.append(priorityBadge(c.priority));
+  if (relaxed) priTd.append(makeEl("span", "RELAXED", "pri-relaxed"));
+  tr.append(priTd);
   tr.append(makeEl("td", constraintSummary(c), "con-sum"));
 
   // Enable toggle: flips c.enabled + re-solves, but must NOT open the editor.
@@ -1767,7 +1774,13 @@ function conRowEl(c) {
   cb.checked = c.enabled !== false;
   cb.title = "Enabled";
   cb.setAttribute("aria-label", "enabled");
-  cb.onchange = () => { c.enabled = cb.checked; tr.classList.toggle("off", !cb.checked); scheduleSolve(); };
+  cb.onchange = () => {
+    c.enabled = cb.checked;
+    if (cb.checked) relaxedIds.delete(c.id); // re-enabling clears the relaxed mark
+    tr.classList.toggle("off", !cb.checked);
+    tr.classList.toggle("relaxed", relaxedIds.has(c.id));
+    scheduleSolve();
+  };
   onTd.append(cb);
   tr.append(onTd);
 
@@ -1794,6 +1807,11 @@ function renderConstraints() {
   if (!box) return;
   box.innerHTML = "";
   const cons = scenario.constraints;
+  // Drop stale relaxed marks (the rule was re-enabled or deleted).
+  for (const id of [...relaxedIds]) {
+    const rc = cons.find((x) => x.id === id);
+    if (!rc || rc.enabled !== false) relaxedIds.delete(id);
+  }
 
   // Type filter chips (only when there's more than one type to choose between).
   const chipBox = $("con-chips");
@@ -1837,8 +1855,31 @@ function renderConstraints() {
   if (btn) btn.textContent = `⚙ Manage constraints (${cons.length})`;
 }
 
+// Constraint PRIORITY (1 = hard/inviolable … 5 = casual preference). The live solve treats every rule
+// as hard; priority only tells the on-demand "Auto-relax" which rules it MAY drop (never P1) to fit.
+const PRIORITY_OPTS = [
+  { value: "1", label: "P1 · Physical / hard (never dropped)" },
+  { value: "2", label: "P2 · Critical / safety" },
+  { value: "3", label: "P3 · Risk" },
+  { value: "4", label: "P4 · Important" },
+  { value: "5", label: "P5 · Preference (dropped first)" },
+];
+// coarse severity class for the badge colour (paired with the "P#" label, never colour alone).
+function priorityTier(p) { return (p || 1) <= 1 ? "hard" : (p || 1) <= 3 ? "warn" : "info"; }
+function priorityBadge(p) {
+  const b = makeEl("span", "P" + (p || 1), "pri-badge pri-" + priorityTier(p));
+  const opt = PRIORITY_OPTS[(p || 1) - 1];
+  if (opt) b.title = opt.label;
+  return b;
+}
+// Constraints the last "Auto-relax" turned off to make the plan fit (shown red until re-enabled).
+let relaxedIds = new Set();
+
 function constraintFields(c) {
   const f = [];
+  // Priority + rationale are shared by EVERY constraint (base fields) — show them first.
+  f.push(selectField("priority", String(c.priority || 3), PRIORITY_OPTS, (v) => (c.priority = parseInt(v, 10) || 3)));
+  f.push(textField("rationale (why it matters)", c.rationale || "", (v) => (c.rationale = v)));
   if (c.type === "time_window") {
     f.push(activitySelect("activity", c.activity, (v) => (c.activity = v)));
     f.push(textField("earliest (HH:MM)", c.earliest || "", (v) => (c.earliest = v || null)));
@@ -1992,6 +2033,11 @@ function renderResult(result) {
     why.type = "button";
     why.onclick = () => explainInfeasible(why);
     banner.append(why);
+    const relaxBtn = makeEl("button", "⚖ Auto-relax lowest priority", "btn btn-sm banner-why");
+    relaxBtn.type = "button";
+    relaxBtn.title = "Drop the lowest-priority conflicting rules (never P1) until the plan fits";
+    relaxBtn.onclick = () => autoRelax(relaxBtn);
+    banner.append(relaxBtn);
     if (lastFeasibleSchedule) {
       renderHealth(status, lastFeasibleSchedule, true);
       drawTimeline(lastFeasibleSchedule, true);
@@ -2075,6 +2121,62 @@ async function explainInfeasible(btn) {
     list.append(row);
   }
   panel.append(list);
+}
+
+// Ask /relax which LOWEST-priority rules to drop to make the plan fit, then APPLY them: disable those
+// rules, mark them RELAXED (red in the constraints table), and re-solve. On-demand, like /explain.
+async function autoRelax(btn) {
+  const panel = $("explain");
+  if (panel) {
+    panel.hidden = false;
+    panel.innerHTML = "";
+    panel.append(makeEl("p", "Finding the lowest-priority rules to relax…", "explain-status"));
+  }
+  if (btn) btn.disabled = true;
+  const seq = resultSeq;
+  let result;
+  try {
+    result = await post("/relax", solvePayload());
+  } catch (err) {
+    if (seq !== resultSeq) return;
+    if (panel) { panel.innerHTML = ""; panel.append(makeEl("p", err.message, "explain-status")); }
+    return;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+  if (seq !== resultSeq) return; // the plan was re-solved while we waited — discard
+  const ruleName = (id) => {
+    const c = scenario.constraints.find((x) => x.id === id);
+    return c ? (c.label || constraintTypeLabel(c.type)) : id;
+  };
+  // Structural: no rule can be relaxed to fix it — it's the horizon / activity load.
+  if (result.structural) {
+    if (panel) { panel.innerHTML = ""; panel.append(makeEl("p",
+      "No rule can be relaxed to fix this — even with every rule off, the activities don't fit. "
+      + "Try a longer horizon, fewer/shorter activities, or a higher section budget.",
+      "explain-status")); }
+    return;
+  }
+  // The remaining conflict is all HARD (P1) rules — relaxation can't help.
+  if (!result.solved) {
+    const ids = result.hard_conflict || [];
+    if (panel) { panel.innerHTML = ""; panel.append(makeEl("p",
+      "Can't relax to a solution — the conflict is between hard (P1) rules: "
+      + ids.map(ruleName).join(", ") + ". Lower one of their priorities, or turn one off.",
+      "explain-status")); }
+    return;
+  }
+  const dropped = result.dropped || [];
+  if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+  if (!dropped.length) { flash("Already fits — nothing to relax"); return; }
+  // Apply: disable each dropped rule + mark it relaxed, then re-solve (now feasible).
+  for (const id of dropped) {
+    const c = scenario.constraints.find((x) => x.id === id);
+    if (c) { c.enabled = false; relaxedIds.add(id); }
+  }
+  const held = scenario.constraints.filter((c) => c.enabled !== false && c.priority <= 2).length;
+  render(); // re-solve with the drops applied; the constraints table now shows them red (RELAXED)
+  flash(`Relaxed ${dropped.length} rule${dropped.length > 1 ? "s" : ""}` + (held ? " · all P1–P2 held" : ""));
 }
 
 // Draw (or redraw) the timeline. Kept separate so a section-collapse toggle can redraw
@@ -2170,11 +2272,12 @@ function renderNowLine() {
   positionNowLine(g); // place it now that it's in the DOM
   line.addEventListener("keydown", (e) => nudgeCursor(e, g));
 
-  // Click / scrub ANYWHERE on the chart moves the playhead (video-editor style). Wired once per chart;
-  // a bar's own click still selects it (we don't cancel the click), and lane labels keep their toggle.
+  // Scrub the playhead by clicking/dragging the ruler or empty track (video-editor style). Wired once
+  // per chart. SKIP a bar (clicking a bar selects/edits it — the scrub-drag would otherwise eat the
+  // click) and a lane label (its own collapse toggle), so those interactions aren't hijacked.
   if (!g.dataset.scrubWired) {
     g.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".lane-label")) return;
+      if (e.button !== 0 || e.target.closest(".bar") || e.target.closest(".lane-label")) return;
       startScrub(e, g);
     });
     g.dataset.scrubWired = "1";

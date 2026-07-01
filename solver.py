@@ -441,3 +441,46 @@ def explain_infeasible(scenario: Scenario) -> dict:
         if solve_with(trial) == "INFEASIBLE":
             keep = trial  # i wasn't needed for the conflict; drop it permanently
     return {"structural": False, "conflict_ids": [scenario.constraints[i].id for i in keep]}
+
+
+def relax_by_priority(scenario: Scenario) -> dict:
+    """When a plan is INFEASIBLE, greedily relax the LOWEST-priority rules until it solves.
+
+    Repeatedly finds a minimal conflict (via explain_infeasible) and disables the least-important
+    member of it — the highest priority NUMBER, and never a priority-1 (hard) rule — re-solving after
+    each drop. This is a priority-ordered minimal correction set: every dropped rule was in a real
+    conflict, and each conflict is broken by sacrificing its most-droppable rule first.
+
+    Returns {"solved": bool, "dropped": [ids], "structural": bool, "hard_conflict": [ids]}:
+      - structural=True  -> infeasible even with every rule off (grow the horizon / cut an activity);
+                            relaxation can't help.
+      - solved=True      -> disabling `dropped` (all priority > 1) makes the plan feasible.
+      - solved=False + hard_conflict -> the remaining conflict is all priority-1 (hard) rules, so it's
+                            genuinely INFEASIBLE and nothing relaxable can fix it.
+
+    Reuses solve()/explain_infeasible() unchanged, so it works for every constraint type and leaves the
+    CP-SAT model + objective untouched. O(n) solves — call on demand, never in the live loop.
+    """
+    trial = scenario.model_copy(deep=True)
+    if solve(trial)["status"] != "INFEASIBLE":
+        return {"solved": True, "dropped": [], "structural": False, "hard_conflict": []}
+    if explain_infeasible(trial).get("structural"):
+        return {"solved": False, "dropped": [], "structural": True, "hard_conflict": []}
+
+    dropped = []
+    for _ in range(len(trial.constraints) + 1):  # bounded: each pass disables at most one rule
+        if solve(trial)["status"] != "INFEASIBLE":
+            return {"solved": True, "dropped": dropped, "structural": False, "hard_conflict": []}
+        conflict = explain_infeasible(trial).get("conflict_ids", [])
+        by_id = {c.id: c for c in trial.constraints}
+        # droppable = in the conflict, still enabled, and not a priority-1 hard rule
+        droppable = [by_id[i] for i in conflict
+                     if i in by_id and by_id[i].enabled and by_id[i].priority > 1]
+        if not droppable:
+            # the conflict is all hard (priority-1) rules — can't relax our way out
+            return {"solved": False, "dropped": dropped, "structural": False, "hard_conflict": conflict}
+        victim = max(droppable, key=lambda c: c.priority)  # least important (highest number) first
+        victim.enabled = False
+        dropped.append(victim.id)
+    return {"solved": solve(trial)["status"] != "INFEASIBLE", "dropped": dropped,
+            "structural": False, "hard_conflict": []}

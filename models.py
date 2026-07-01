@@ -69,7 +69,20 @@ class _Constraint(BaseModel):
     id: str = ""  # auto-filled (c1, c2, …) by Scenario if the LLM omits it
     enabled: bool = True
     label: str = ""
-    source: str = ""
+    source: str = ""    # verbatim provenance: the exact phrase this rule came from (never fabricated)
+    # Priority: 1 = hardest ("physical"/inviolable) … 5 = casual preference (dropped first). Default 1
+    # keeps every existing plan as-hard as today. It does NOT change the live solve (all rules stay
+    # hard there); it only tells the on-demand priority-ordered relaxation which rules it MAY drop
+    # (never a priority-1 rule) to make an infeasible plan fit. `rationale` is the human WHY.
+    priority: int = 1
+    rationale: str = ""
+
+    @field_validator("priority")
+    @classmethod
+    def _check_priority(cls, v):
+        if v < 1 or v > 5:
+            raise ValueError("priority must be 1..5 (1 = hard/inviolable, 5 = casual preference)")
+        return v
 
 
 class TimeWindow(_Constraint):

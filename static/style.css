@@ -975,6 +975,17 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .con-row.off { opacity: 0.5; }
 .lib-table td.con-type { color: var(--muted); white-space: nowrap; }
 .lib-table th.con-on, .lib-table td.con-on { width: 1%; text-align: center; }
+.lib-table th.con-pri, .lib-table td.con-pri { width: 1%; white-space: nowrap; }
+
+/* constraint PRIORITY badge (P1 hard … P5 preference) + the auto-relaxed marker */
+.pri-badge { font-family: var(--font-mono); font-size: 0.62rem; font-weight: 700; padding: 0.03rem 0.32rem; border-radius: var(--radius-pill); border: 1px solid transparent; white-space: nowrap; }
+.pri-hard { background: var(--bad-bg); color: var(--bad); border-color: var(--bad-border); }
+.pri-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+.pri-info { background: var(--surface-2); color: var(--muted); border-color: var(--border); }
+.pri-relaxed { margin-left: 0.35rem; font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700; color: var(--bad); }
+/* a rule the solver had to drop (Auto-relax): red tint, but still readable */
+.con-row.relaxed { background: color-mix(in srgb, var(--bad) 12%, var(--surface-1)); opacity: 1; }
+.con-row.relaxed .lt-name-txt { text-decoration: line-through; text-decoration-color: var(--bad); }
 
 /* group bands: a full-width colored header row; click to collapse the category */
 .lt-band { --cat: var(--muted); cursor: pointer; }
