@@ -947,6 +947,7 @@ let libraryDurations = new Set(); // duration band keys: "≤15m" "15–45m" "45
 let librarySort = "category"; // default to the banded, grouped-by-category table (P6-style)
 let libCollapsedCats = new Set(); // category bands the user has collapsed in the catalog table
 let libraryPage = 0; // 0-based page (constraints modal still paginates; the library table scrolls)
+let libEditing = null; // the template currently open for inline editing in the catalog table (or null)
 const LIB_PAGE = 48;
 // User-authored templates ("+ New" in the modal), persisted in localStorage like saved plans.
 let customTemplates = [];
@@ -1033,10 +1034,15 @@ function pushRecent(label) {
     /* storage unavailable — skip persistence */
   }
 }
-// The catalog = file (library.json) templates + the user's saved ones. Keep the SAME element
-// references (no per-item copy) so customTemplates.includes(tpl) works for the remove button.
+// The catalog = file (library.json) templates + the user's saved ones. A saved template SHADOWS a
+// seed with the same label (case-insensitive), so editing a seed shows ONE row, not a duplicate.
+// Keep the SAME element references (no per-item copy) so customTemplates.includes(tpl) still works
+// for the "saved" badge / remove / edit-in-place.
 function allTemplates() {
-  return [...LIBRARY, ...customTemplates];
+  const byKey = new Map();
+  for (const t of LIBRARY) byKey.set(String(t.label).toLowerCase(), t);
+  for (const t of customTemplates) byKey.set(String(t.label).toLowerCase(), t); // custom wins
+  return [...byKey.values()];
 }
 
 function openLibrary() {
@@ -1261,7 +1267,72 @@ function libTableHead() {
 
 // One catalog ROW (the table form of the old card): a category-colored name, category, section,
 // duration, an "× N in plan" count, and the add / saved-remove actions.
+// Inline editor for one catalog row: name / category / section / duration inputs + Save/Cancel.
+// Editing a SAVED template updates it in place; editing a SEED (library.json) creates a saved copy
+// that shadows the seed (see allTemplates), so "editing a library activity" always persists to the
+// user's own templates — the read-only file is never mutated. Existing plan activities that were
+// already added from this template are independent copies and are NOT changed.
+function libEditRowEl(tpl) {
+  const tr = document.createElement("tr");
+  tr.className = "lt-row lt-row-editing";
+  tr.style.setProperty("--cat", (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)");
+
+  const mkText = (val, ph, list) => {
+    const i = makeEl("input", "", "select select-sm");
+    i.type = "text";
+    i.value = val == null ? "" : String(val);
+    i.placeholder = ph;
+    if (list) i.setAttribute("list", list);
+    return i;
+  };
+  const nameIn = mkText(tpl.label, "Name…");
+  const catIn = mkText(tpl.category, "Category", "lib-cat-options");
+  const secIn = mkText(tpl.section, "Section", "lib-sec-options");
+  const durIn = makeEl("input", "", "select select-sm");
+  durIn.type = "number"; durIn.min = "1"; durIn.step = "1"; durIn.value = String(tpl.minutes);
+
+  const nameTd = makeEl("td", "", "lt-name"); nameTd.append(nameIn);
+  const catTd = makeEl("td", "", "lt-cat"); catTd.append(catIn);
+  const secTd = makeEl("td", "", "lt-sec"); secTd.append(secIn);
+  const durTd = makeEl("td", "", "lt-dur"); durTd.append(durIn);
+  tr.append(nameTd, catTd, secTd, durTd, makeEl("td", "", "lt-used"));
+
+  const save = () => {
+    const label = nameIn.value.trim();
+    const minutes = parseInt(durIn.value, 10);
+    if (!label) { nameIn.focus(); return; }
+    if (!Number.isInteger(minutes) || minutes < 1) { durIn.focus(); return; }
+    const category = catIn.value.trim() || null;
+    const section = secIn.value.trim() || null;
+    if (customTemplates.includes(tpl)) {
+      Object.assign(tpl, { label, minutes, category, section }); // edit the saved template in place
+    } else {
+      customTemplates.push({ label, minutes, category, section }); // seed -> a saved copy that shadows it
+    }
+    saveTemplates();
+    libEditing = null;
+    renderLibraryList();
+  };
+  const cancel = () => { libEditing = null; renderLibraryList(); };
+
+  const actTd = makeEl("td", "", "lt-add");
+  const saveBtn = makeEl("button", "Save", "btn btn-sm btn-primary"); saveBtn.type = "button"; saveBtn.onclick = save;
+  const cancelBtn = makeEl("button", "Cancel", "btn btn-sm"); cancelBtn.type = "button"; cancelBtn.onclick = cancel;
+  actTd.append(saveBtn, cancelBtn);
+  tr.append(actTd);
+
+  // Enter saves, Esc cancels — quick keyboard editing.
+  for (const el of [nameIn, catIn, secIn, durIn]) {
+    el.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); save(); }
+      else if (e.key === "Escape") cancel();
+    };
+  }
+  return tr;
+}
+
 function libRowEl(tpl) {
+  if (libEditing === tpl) return libEditRowEl(tpl); // this row is open for editing -> show the editor
   const tr = document.createElement("tr");
   tr.className = "lt-row";
   tr.style.setProperty("--cat", (TYPES[tpl.category] && TYPES[tpl.category].color) || "var(--muted)");
@@ -1296,6 +1367,12 @@ function libRowEl(tpl) {
     renderLibraryList(); // refresh the "in plan" counts
   };
   actTd.append(add);
+  // Edit any activity (seed or saved). Editing a seed saves an editable copy that shadows it.
+  const edit = makeEl("button", "Edit", "btn btn-sm lt-edit-btn");
+  edit.type = "button";
+  edit.title = "Edit this activity";
+  edit.onclick = () => { libEditing = tpl; renderLibraryList(); };
+  actTd.append(edit);
   // User-saved templates get a × to remove; seed (library.json) rows don't.
   if (customTemplates.includes(tpl)) {
     const rm = deleteBtn(() => {
