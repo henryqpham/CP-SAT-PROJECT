@@ -1,7 +1,21 @@
+# python
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# secrets / local config
 .env
+
+# generated (rebuild with `graphify update .`)
+graphify-out/
+
+# node (tests/ui has its own ignore too; this is repo-wide insurance)
+node_modules/
+
+# scratch notes stay local — only the real docs are tracked
 *.md
 !ARCHITECTURE.md
 !HANDOFF.md
+!README.md
+!CLAUDE.md

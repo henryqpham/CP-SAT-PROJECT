@@ -67,9 +67,14 @@ test("ask-the-doc renders the answer with its cited sources", async () => {
 
     const log = app.document.getElementById("doc-chat-log");
     assert.match(log.querySelector(".chat-user").textContent, /how long is sleep/);
-    const bot = log.querySelector(".chat-bot");
+    // the first bot bubble is the seeded intro (capability line + example prompts);
+    // the ANSWER is the last one
+    const bots = [...log.querySelectorAll(".chat-bot")];
+    assert.match(bots[0].textContent, /I answer questions about the last imported document/);
+    const bot = bots[bots.length - 1];
     assert.match(bot.textContent, /8h15m \[2\]/);
     assert.match(bot.querySelector(".chat-sources").textContent, /Global Constraints — Sleep: 8h15m/);
+    assert.match(bot.querySelector("summary").textContent, /Sources \(2\)/);
     assert.match(app.document.getElementById("doc-chat-name").textContent, /artemis\.docx/);
   } finally {
     app.close();

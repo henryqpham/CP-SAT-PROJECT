@@ -44,7 +44,8 @@
 
       <div id="alert" class="alert" role="alert" hidden></div>
 
-      <div id="health" class="health" hidden></div>
+      <!-- role=status: a solve/fill replacing the numbers is announced politely -->
+      <div id="health" class="health" role="status" hidden></div>
 
       <!-- transient success toast (bottom-center); shown via flash() -->
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
@@ -220,9 +221,10 @@
          into a plan. Nothing touches the planner until the human confirms here (a rules/LLM pass can
          drop or mis-read a rule), per CLAUDE.md: validate the parsed constraints, not just the solve. -->
     <div id="extract-modal" class="modal-backdrop" hidden>
-      <div class="modal modal-extract" role="dialog" aria-modal="true" aria-label="Review extracted document">
+      <div class="modal modal-extract" role="dialog" aria-modal="true" aria-labelledby="extract-title">
         <div class="modal-head">
-          <h2 class="modal-title">Review extracted document</h2>
+          <!-- initial focus lands on the title (review first, confirm second) -->
+          <h2 class="modal-title" id="extract-title" tabindex="-1">Review extracted document</h2>
           <button type="button" id="extract-close" class="modal-close" aria-label="Close">×</button>
         </div>
         <div id="extract-body" class="modal-body extract-body"></div>
@@ -237,15 +239,16 @@
     <!-- Ask the doc: Q&A over the last imported .docx. Local models only; every answer
          cites the source blocks it was built from, so it can be checked against the doc. -->
     <div id="doc-chat-modal" class="modal-backdrop" hidden>
-      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-label="Ask the document">
+      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-labelledby="doc-chat-title">
         <div class="modal-head">
-          <h2 class="modal-title">Ask the doc <span id="doc-chat-name" class="chat-doc-name"></span></h2>
+          <h2 class="modal-title" id="doc-chat-title">Ask the doc <span id="doc-chat-name" class="chat-doc-name"></span></h2>
           <button type="button" id="doc-chat-close" class="modal-close" aria-label="Close">×</button>
         </div>
-        <div id="doc-chat-log" class="modal-body chat-log" aria-live="polite"></div>
+        <div id="doc-chat-log" class="modal-body chat-log" role="log" aria-live="polite"></div>
         <div class="modal-foot chat-foot">
+          <span class="chat-hint" title="Answers come from the local Ollama model — nothing leaves this machine">local model · ~10–30 s</span>
           <input id="doc-chat-input" class="chat-input" type="text"
-                 placeholder="e.g. How long is sleep, and what must happen right before it?" />
+                 placeholder="Ask about the imported document…" />
           <button type="button" id="doc-chat-send" class="btn btn-primary btn-sm">Ask</button>
         </div>
       </div>
@@ -254,15 +257,16 @@
     <!-- Plan assistant: natural-language edits through typed tools. Every change is
          validated by the same IR rules as a manual edit, lands in undo/redo, and re-solves. -->
     <div id="assistant-modal" class="modal-backdrop" hidden>
-      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-label="Plan assistant">
+      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-labelledby="assistant-title">
         <div class="modal-head">
-          <h2 class="modal-title">Plan assistant</h2>
+          <h2 class="modal-title" id="assistant-title">Plan assistant</h2>
           <button type="button" id="assistant-close" class="modal-close" aria-label="Close">×</button>
         </div>
-        <div id="assistant-log" class="modal-body chat-log" aria-live="polite"></div>
+        <div id="assistant-log" class="modal-body chat-log" role="log" aria-live="polite"></div>
         <div class="modal-foot chat-foot">
+          <span class="chat-hint" title="Edits run on the local Ollama model — every change is validated and undoable">local model · ~10–30 s</span>
           <input id="assistant-input" class="chat-input" type="text"
-                 placeholder="e.g. add a 30 minute break in the Deli after lunch" />
+                 placeholder="Describe an edit, e.g. “move lunch to 12:30”" />
           <button type="button" id="assistant-send" class="btn btn-primary btn-sm">Send</button>
         </div>
       </div>

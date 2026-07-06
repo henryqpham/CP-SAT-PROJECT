@@ -690,6 +690,22 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
 }
 .health-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-tint); }
+/* the fill-preview group: a bordered accent capsule, so pack results read as a
+   temporary MODE next to the live stats — not more of the same text run */
+.health-fill-group {
+  display: inline-flex; align-items: center; gap: 0.55rem;
+  border: 1px solid var(--accent-glow); background: var(--accent-tint);
+  border-radius: var(--radius-pill); padding: 0.14rem 0.3rem 0.14rem 0.65rem;
+}
+.health-fill-label {
+  font-family: var(--font-mono); font-weight: 700; font-size: 0.68rem;
+  letter-spacing: 0.05em; color: var(--accent);
+}
+.health-fill-close {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 0 0.3rem; border-radius: var(--radius-pill);
+}
+.health-fill-close:hover { color: var(--ink); background: var(--hover-2); }
 .cap-bar {
   position: relative; width: 8rem; height: 0.55rem;
   background: var(--track); border-radius: var(--radius-pill); overflow: hidden;
@@ -812,6 +828,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 /* Wide like the constraints manager so the activity/constraint tables breathe. */
 .modal-extract { width: min(1040px, 95vw); height: 85vh; max-height: 85vh; }
 .extract-body { display: flex; flex-direction: column; gap: 0.9rem; }
+/* flex children default to shrink-to-fit, which squashed the review tables to a
+   sliver and left the body with nothing to scroll — content keeps its height. */
+.extract-body > * { flex-shrink: 0; }
 /* footer note sits left; the buttons stay right-aligned (.modal-foot is justify-content: flex-end) */
 .extract-foot-note { margin-right: auto; align-self: center; color: var(--muted); font-size: 0.8rem; }
 
@@ -831,6 +850,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn);
   border-radius: var(--radius-sm); padding: 0.45rem 0.7rem; font-size: 0.85rem;
 }
+/* a flag that jumps to the row it's about (self-check findings) */
+button.extract-flag { text-align: left; cursor: pointer; font: inherit; width: 100%; }
+button.extract-flag:hover { border-color: var(--warn); background: rgba(245, 177, 61, 0.22); }
+/* shared "look here" pulse — used by flag jumps and citation clicks */
+.flash-highlight { animation: flash-row 0.6s var(--ease) 2; }
+@keyframes flash-row { 50% { background-color: var(--accent-tint); } }
 
 /* extraction notes: collapsible list of every warning (the deterministic-first headline is #1) */
 .extract-notes { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.7rem; }
@@ -839,8 +864,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 
 .extract-section-title { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; }
 
-/* the two review tables: banded, monospace ids, dimmed provenance — read-only (edit after loading) */
-.extract-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+/* the two review tables: banded, monospace ids, dimmed provenance — read-only (edit after loading).
+   Each table scrolls inside its own capped wrap (sticky headers keep the columns readable),
+   so a 76-row constraint list is scannable without an endless modal. */
+.extract-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: auto; max-height: 24rem; }
+.extract-table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .extract-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .extract-table th {
   position: sticky; top: 0; text-align: left; font-weight: 600; color: var(--muted);
@@ -860,10 +888,25 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .chat-user { align-self: flex-end; background: var(--surface-2); border: 1px solid var(--border); }
 .chat-bot { align-self: flex-start; background: var(--surface-1); border: 1px solid var(--border-faint); }
 .chat-busy { font-style: italic; color: var(--muted); }
-.chat-error { color: var(--bad); border-color: var(--bad-border); }
+/* three pulsing dots + a live elapsed counter, so a 10-30s local-model wait reads as alive */
+.chat-dots span { animation: chat-dot 1.2s infinite; display: inline-block; }
+.chat-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chat-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chat-dot { 0%, 60%, 100% { opacity: 0.25; } 30% { opacity: 1; } }
+.chat-elapsed { color: var(--faint); font-variant-numeric: tabular-nums; }
+.chat-error { color: var(--bad); border-color: var(--bad-border); font-style: normal; }
+.chat-retry { margin-top: 0.4rem; }
 .chat-sources, .chat-actions { margin-top: 0.4rem; font-size: 0.72rem; color: var(--muted); }
+.chat-sources summary { cursor: pointer; }
 .chat-source, .chat-actions div { margin-top: 2px; }
-.chat-foot { display: flex; gap: 0.5rem; }
+.chat-source.flash-highlight { border-radius: 4px; }
+/* [n] citation chips inside an answer — click one to flash its source below */
+sup.cite { color: var(--accent); font-weight: 700; cursor: pointer; padding: 0 1px; }
+sup.cite:hover, sup.cite:focus-visible { text-decoration: underline; outline: none; }
+/* intro bubble suggestion chips (reuse the .lib-chip look) */
+.chat-suggests { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.chat-foot { display: flex; gap: 0.5rem; align-items: center; }
+.chat-hint { margin-right: auto; color: var(--faint); font-size: 0.72rem; white-space: nowrap; }
 .chat-input { flex: 1; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--ink); padding: 0.45rem 0.6rem; font: inherit; }
 .chat-doc-name { color: var(--muted); font-size: 0.8rem; font-weight: normal; margin-left: 0.4rem; }
 .extract-empty { color: var(--muted); text-align: center; font-style: italic; padding: 0.8rem; }

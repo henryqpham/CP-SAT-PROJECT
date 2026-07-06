@@ -161,17 +161,66 @@ $("extract-cancel").onclick = closeExtractModal;
 $("extract-load").onclick = confirmExtractLoad;
 $("extract-modal").onclick = (e) => { if (e.target === $("extract-modal")) closeExtractModal(); }; // backdrop click
 
+// ---- modal focus discipline (the doc-review + chat modals) ----------------
+// Remember who opened the modal, put focus inside, give it back on close, and
+// keep Tab cycling inside while open (the WAI-ARIA dialog pattern).
+let modalReturnFocus = null;
+function openDialog(modalId, focusId) {
+  modalReturnFocus = document.activeElement;
+  $(modalId).hidden = false;
+  if (focusId && $(focusId)) $(focusId).focus();
+}
+function closeDialog(modalId) {
+  $(modalId).hidden = true;
+  if (modalReturnFocus && document.contains(modalReturnFocus)) modalReturnFocus.focus();
+  modalReturnFocus = null;
+}
+function trapTab(modalId) {
+  $(modalId).addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const focusables = [...$(modalId).querySelectorAll(
+      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+    )].filter((el) => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+}
+trapTab("extract-modal");
+trapTab("doc-chat-modal");
+trapTab("assistant-modal");
+
 // Ask the doc: Q&A over the last imported .docx (local RAG; answers cite the doc).
-$("doc-chat-open").onclick = () => { $("doc-chat-modal").hidden = false; $("doc-chat-input").focus(); };
-$("doc-chat-close").onclick = () => { $("doc-chat-modal").hidden = true; };
-$("doc-chat-modal").onclick = (e) => { if (e.target === $("doc-chat-modal")) $("doc-chat-modal").hidden = true; };
+function openDocChat() {
+  openDialog("doc-chat-modal", "doc-chat-input");
+  seedChatIntro("doc-chat-log", "doc-chat-input", askDoc,
+    "I answer questions about the last imported document, and every answer cites the passages it came from.",
+    ["What are the main scheduling rules?",
+     "Which activities happen every day?",
+     "Are there any deadlines?"]);
+}
+const closeDocChat = () => closeDialog("doc-chat-modal");
+$("doc-chat-open").onclick = openDocChat;
+$("doc-chat-close").onclick = closeDocChat;
+$("doc-chat-modal").onclick = (e) => { if (e.target === $("doc-chat-modal")) closeDocChat(); };
 $("doc-chat-send").onclick = () => askDoc();
 $("doc-chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") askDoc(); });
 
 // Plan assistant: natural-language edits through typed tools (validated + undoable).
-$("assistant-open").onclick = () => { $("assistant-modal").hidden = false; $("assistant-input").focus(); };
-$("assistant-close").onclick = () => { $("assistant-modal").hidden = true; };
-$("assistant-modal").onclick = (e) => { if (e.target === $("assistant-modal")) $("assistant-modal").hidden = true; };
+function openAssistant() {
+  openDialog("assistant-modal", "assistant-input");
+  seedChatIntro("assistant-log", "assistant-input", askAssistant,
+    "I change this plan through checked steps — every edit is validated like a manual one, re-solves live, and Undo takes it back.",
+    ["Add a 30 minute break after lunch",
+     "Make exercise 45 minutes",
+     "Why doesn't the plan fit?"]);
+}
+const closeAssistant = () => closeDialog("assistant-modal");
+$("assistant-open").onclick = openAssistant;
+$("assistant-close").onclick = closeAssistant;
+$("assistant-modal").onclick = (e) => { if (e.target === $("assistant-modal")) closeAssistant(); };
 $("assistant-send").onclick = () => askAssistant();
 $("assistant-input").addEventListener("keydown", (e) => { if (e.key === "Enter") askAssistant(); });
 // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo — but only when NOT typing in a field,
@@ -248,8 +297,8 @@ $("roster-search").oninput = (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("extract-modal").hidden) closeExtractModal();
-  else if (!$("doc-chat-modal").hidden) $("doc-chat-modal").hidden = true;
-  else if (!$("assistant-modal").hidden) $("assistant-modal").hidden = true;
+  else if (!$("doc-chat-modal").hidden) closeDocChat();
+  else if (!$("assistant-modal").hidden) closeAssistant();
   else if (!$("library-modal").hidden) closeLibrary();
   else if (!$("constraint-modal").hidden) closeAddConstraintModal();
   else if (!$("constraints-modal").hidden) closeConstraintsList();
@@ -752,11 +801,12 @@ async function runExtract(file) {
 }
 
 function openExtractModal() {
-  $("extract-modal").hidden = false;
-  $("extract-load").focus(); // move focus into the dialog
+  // Focus the TITLE, not the confirm button — the point of this dialog is to
+  // review before loading, so don't tee up a blind confirmation.
+  openDialog("extract-modal", "extract-title");
 }
 function closeExtractModal() {
-  $("extract-modal").hidden = true;
+  closeDialog("extract-modal");
   pendingExtract = null; // discard on cancel/close; confirmExtractLoad reads it BEFORE closing
 }
 
@@ -829,16 +879,34 @@ function renderExtractReview(result) {
   if (unmodeled.length)
     flags.push(`${unmodeled.length} rule bullet(s) could not be modeled — shown in the notes, NOT enforced.`);
   const selfCheck = coverage.self_check;
+  const jumpFlags = [];  // {text, cid} — clicking one scrolls to the constraint it's about
   if (selfCheck && selfCheck.violations && selfCheck.violations.length) {
     flags.push(`Self-check: the document's own timetable breaks ${selfCheck.violations.length} extracted rule(s) — it may contradict itself:`);
     for (const v of selfCheck.violations.slice(0, 8))
-      flags.push(`   ${v.label || v.constraint} (day ${v.day + 1}): ${v.detail}`);
+      jumpFlags.push({ text: `   ${v.label || v.constraint} (day ${v.day + 1}): ${v.detail}`,
+                       cid: v.constraint });
     if (selfCheck.violations.length > 8)
       flags.push(`   …and ${selfCheck.violations.length - 8} more.`);
   }
-  if (flags.length) {
+  if (flags.length || jumpFlags.length) {
     const box = makeEl("div", "", "extract-flags");
     for (const f of flags) box.append(makeEl("div", "⚠ " + f, "extract-flag"));
+    for (const jf of jumpFlags) {
+      // a flag you can click: scrolls to and flashes the row it's about
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "extract-flag";
+      b.textContent = "⚠ " + jf.text + " — show me";
+      b.onclick = () => {
+        const row = body.querySelector(`tr[data-cid="${jf.cid}"]`);
+        if (!row) return;
+        row.scrollIntoView({ block: "center" });
+        row.classList.remove("flash-highlight");
+        void row.offsetWidth; // restart the animation on repeat clicks
+        row.classList.add("flash-highlight");
+      };
+      box.append(b);
+    }
     body.append(box);
   }
 
@@ -859,10 +927,17 @@ function renderExtractReview(result) {
   body.append(extractConstraintsTable(scenario.constraints));
 
   $("extract-foot-note").textContent = "Loads into a NEW plan tab — your current plan is untouched.";
+  // The confirm button states exactly what it commits, so a short count is a tell.
+  $("extract-load").textContent =
+    `Load ${nA} activities + ${scenario.constraints.length} constraints`;
 }
 
-function extractTableShell(headers) {
+function extractTableShell(headers, label) {
   const wrap = makeEl("div", "", "extract-table-wrap");
+  // the wrap scrolls — make it keyboard-reachable and named for screen readers
+  wrap.tabIndex = 0;
+  wrap.setAttribute("role", "region");
+  if (label) wrap.setAttribute("aria-label", label);
   const table = makeEl("table", "", "extract-table");
   const thead = makeEl("thead");
   const hr = makeEl("tr");
@@ -876,7 +951,9 @@ function extractTableShell(headers) {
 }
 
 function extractActivitiesTable(acts) {
-  const { wrap, tb } = extractTableShell(["id", "name", "duration", "section (resource)", "group / doc-section"]);
+  const { wrap, tb } = extractTableShell(
+    ["id", "name", "duration", "section (resource)", "group / doc-section"],
+    "Extracted activities");
   if (!acts.length) tb.append(oneCellRow(5, "No activities extracted."));
   for (const a of acts) {
     const tr = makeEl("tr");
@@ -891,10 +968,12 @@ function extractActivitiesTable(acts) {
 }
 
 function extractConstraintsTable(cons) {
-  const { wrap, tb } = extractTableShell(["pri", "type", "detail", "source"]);
+  const { wrap, tb } = extractTableShell(["pri", "type", "detail", "source"],
+    "Extracted constraints");
   if (!cons.length) tb.append(oneCellRow(4, "No constraints extracted."));
   for (const c of cons) {
     const tr = makeEl("tr");
+    if (c.id) tr.dataset.cid = c.id; // the self-check flags jump to rows by this
     const pt = makeEl("td");
     pt.append(priorityBadge(c.priority));
     tr.append(pt);
@@ -940,40 +1019,139 @@ function fmtMinutes(m) {
 }
 
 // ---- chat panels: Ask the doc (RAG) + Plan assistant (typed tools) --------
-// One bubble in a chat log. Everything is textContent (makeEl), never markup.
+// One bubble in a chat log. Everything is built with textContent, never markup.
+// Only pin the log to the bottom when the reader is already there (don't yank
+// them down while they're re-reading an earlier answer).
 function chatBubble(log, text, cls) {
+  const nearBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
   const el = makeEl("div", text, "chat-msg " + cls);
   log.append(el);
-  log.scrollTop = log.scrollHeight;
+  if (nearBottom) log.scrollTop = log.scrollHeight;
   return el;
+}
+
+// Render answer text into a bubble: minimal markdown (**bold**) and [n] citation
+// chips that flash their source line. createElement/textContent only — no innerHTML.
+function appendChatText(el, text) {
+  const cites = [];
+  text.split("**").forEach((part, i) => {
+    const target = i % 2 ? makeEl("strong", "") : el;
+    let last = 0;
+    for (const m of part.matchAll(/\[(\d+)\]/g)) {
+      target.append(part.slice(last, m.index));
+      const cite = makeEl("sup", `[${m[1]}]`, "cite");
+      cite.tabIndex = 0;
+      cite.title = "Show the source this cites";
+      cites.push([cite, m[1]]);
+      target.append(cite);
+      last = m.index + m[0].length;
+    }
+    target.append(part.slice(last));
+    if (target !== el) el.append(target);
+  });
+  return cites;
+}
+
+// The "thinking" bubble for a 10–30s local-model wait: pulsing dots + elapsed
+// seconds, so the wait reads as alive rather than hung. Remove with .stop().
+function busyBubble(log, label) {
+  const el = chatBubble(log, "", "chat-bot chat-busy");
+  el.append(makeEl("span", label + " "));
+  const dots = makeEl("span", "", "chat-dots");
+  for (let i = 0; i < 3; i++) dots.append(makeEl("span", "·"));
+  el.append(dots);
+  const elapsed = makeEl("span", "", "chat-elapsed");
+  el.append(elapsed);
+  const started = Date.now();
+  const timer = setInterval(() => {
+    elapsed.textContent = ` ${Math.round((Date.now() - started) / 1000)}s`;
+  }, 1000);
+  el.stop = () => { clearInterval(timer); el.remove(); };
+  return el;
+}
+
+// An error message that says it's an error (icon + word, not color alone) and
+// offers a one-click retry of the same question.
+function chatErrorBubble(log, message, retry) {
+  const el = chatBubble(log, "⚠ Error — " + message, "chat-bot chat-error");
+  if (retry) {
+    el.append(makeEl("br", ""));
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn-ghost btn-sm chat-retry";
+    b.textContent = "↻ Retry";
+    b.onclick = () => { el.remove(); retry(); };
+    el.append(b);
+  }
+  return el;
+}
+
+// First open: say what the panel can do and offer example prompts to click —
+// an empty scroll area teaches nothing.
+function seedChatIntro(logId, inputId, ask, intro, suggestions) {
+  const log = $(logId);
+  if (log.childElementCount) return;
+  const bubble = chatBubble(log, intro, "chat-bot");
+  const row = makeEl("div", "", "chat-suggests");
+  for (const s of suggestions) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "lib-chip";
+    chip.append(makeEl("span", s, "lib-chip-label"));
+    chip.onclick = () => { $(inputId).value = s; ask(); };
+    row.append(chip);
+  }
+  bubble.append(row);
 }
 
 // Ask a question about the last imported document. The server answers from the
 // document's own blocks and returns the source excerpts it used — shown under
 // the answer so every claim can be checked against the doc.
-async function askDoc() {
+async function askDoc(forcedQ) {
   const input = $("doc-chat-input");
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = "";
+  const q = (forcedQ || input.value).trim();
+  if (!q || $("doc-chat-send").disabled) return;
+  if (!forcedQ) input.value = "";
   const log = $("doc-chat-log");
   chatBubble(log, q, "chat-user");
-  const busy = chatBubble(log, "Reading the document…", "chat-bot chat-busy");
+  const busy = busyBubble(log, "Reading the document");
+  $("doc-chat-send").disabled = true;
   try {
     const r = await post("/doc_chat", { question: q });
-    busy.remove();
-    const bubble = chatBubble(log, r.answer, "chat-bot");
+    busy.stop();
+    const bubble = chatBubble(log, "", "chat-bot");
+    const cites = appendChatText(bubble, r.answer);
     if (r.sources && r.sources.length) {
-      const src = makeEl("div", "", "chat-sources");
-      src.append(makeEl("div", "Sources:"));
-      for (const s of r.sources)
-        src.append(makeEl("div", `[${s.n}] ${s.section ? s.section + " — " : ""}${s.text.slice(0, 140)}`, "chat-source"));
-      bubble.append(src);
+      // sources collapse behind a labeled count; each [n] chip flashes its line
+      const details = makeEl("details", "", "chat-sources");
+      details.append(makeEl("summary", `Sources (${r.sources.length})`));
+      for (const s of r.sources) {
+        const line = makeEl("div",
+          `[${s.n}] ${s.section ? s.section + " — " : ""}${s.text.slice(0, 140)}`, "chat-source");
+        line.dataset.n = s.n;
+        details.append(line);
+      }
+      bubble.append(details);
+      const flashSource = (n) => {
+        details.open = true;
+        const line = details.querySelector(`.chat-source[data-n="${n}"]`);
+        if (!line) return;
+        line.scrollIntoView({ block: "nearest" });
+        line.classList.remove("flash-highlight");
+        void line.offsetWidth;
+        line.classList.add("flash-highlight");
+      };
+      for (const [cite, n] of cites) {
+        cite.onclick = () => flashSource(n);
+        cite.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flashSource(n); } };
+      }
     }
     if (r.document) $("doc-chat-name").textContent = "· " + r.document;
   } catch (e) {
-    busy.remove();
-    chatBubble(log, e.message, "chat-bot chat-error");
+    busy.stop();
+    chatErrorBubble(log, e.message, () => askDoc(q));
+  } finally {
+    $("doc-chat-send").disabled = false;
   }
 }
 
@@ -981,18 +1159,20 @@ async function askDoc() {
 // typed tools (each edit validated like a manual one) and returns the new scenario
 // + a list of what changed. Applying it goes through the same history/undo/re-solve
 // path as any hand edit, so Ctrl+Z takes it right back.
-async function askAssistant() {
+async function askAssistant(forcedText) {
   const input = $("assistant-input");
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = "";
+  const text = (forcedText || input.value).trim();
+  if (!text || $("assistant-send").disabled) return;
+  if (!forcedText) input.value = "";
   const log = $("assistant-log");
   chatBubble(log, text, "chat-user");
-  const busy = chatBubble(log, "Working…", "chat-bot chat-busy");
+  const busy = busyBubble(log, "Working on the plan");
+  $("assistant-send").disabled = true;
   try {
     const r = await post("/assist", { message: text, scenario: solvePayload() });
-    busy.remove();
-    const bubble = chatBubble(log, r.reply || "Done.", "chat-bot");
+    busy.stop();
+    const bubble = chatBubble(log, "", "chat-bot");
+    appendChatText(bubble, r.reply || "Done.");
     if (r.actions && r.actions.length) {
       const acts = makeEl("div", "", "chat-actions");
       acts.append(makeEl("div", "Changes:"));
@@ -1008,11 +1188,20 @@ async function askAssistant() {
       selectedId = null;
       saveTabs();
       render(); // re-render + live re-solve; recordHistory makes this one undo step
+      // a visible way back, right on the confirmation (Ctrl+Z stays the shortcut)
+      const undoBtn = document.createElement("button");
+      undoBtn.type = "button";
+      undoBtn.className = "btn btn-ghost btn-sm chat-retry";
+      undoBtn.textContent = "↶ Undo (Ctrl+Z)";
+      undoBtn.onclick = () => { undo(); undoBtn.disabled = true; };
+      bubble.append(undoBtn);
       flash(`Assistant: ${r.actions.length} change(s) — Undo takes them back`);
     }
   } catch (e) {
-    busy.remove();
-    chatBubble(log, e.message, "chat-bot chat-error");
+    busy.stop();
+    chatErrorBubble(log, e.message, () => askAssistant(text));
+  } finally {
+    $("assistant-send").disabled = false;
   }
 }
 
@@ -2877,14 +3066,29 @@ function renderHealth(status, schedule, stale) {
     strip.append(makeEl("span", tight + " tight", "health-stat"));
     if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
 
-    // After a "Fill window" run: per-section utilization (each section is a serial
-    // resource, so its capacity is the whole horizon) + how much didn't fit.
+    // After a "Fill window" run: a bordered FILL PREVIEW capsule, so the pack
+    // result reads as a temporary mode beside the live stats (accent-blue, not
+    // the green of the status pill). Per-section utilization + what didn't fit,
+    // with an explicit × back to the live solve.
     if (lastFill && !stale) {
-      strip.append(makeEl("span", "FILL", "health-pill health-ok"));
-      for (const [name, s] of Object.entries(lastFill.sections || {}))
-        strip.append(makeEl("span", `${name} ${s.pct}% · ${dur(s.left)} left`, "health-stat"));
+      const group = makeEl("span", "", "health-fill-group");
+      group.title = "Result of ⤒ Fill window — replaced by the next live solve";
+      group.append(makeEl("span", "FILL PREVIEW", "health-fill-label"));
+      for (const [name, s] of Object.entries(lastFill.sections || {})) {
+        const label = name === "(no section)" ? "unsectioned" : name;
+        group.append(makeEl("span", `${label} ${s.pct}% · ${dur(s.left)} left`, "health-stat"));
+      }
       const o = lastFill.overall || {};
-      if (o.overflow) strip.append(makeEl("span", `${dur(o.overflow)} didn't fit`, "health-stat health-over"));
+      if (o.overflow) group.append(makeEl("span", `⚠ ${dur(o.overflow)} didn't fit`, "health-stat health-over"));
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "health-fill-close";
+      close.textContent = "×";
+      close.title = "Back to the live solve";
+      close.setAttribute("aria-label", "Dismiss the fill preview");
+      close.onclick = () => { lastFill = null; solveNow(); };
+      group.append(close);
+      strip.append(group);
     }
   } else {
     strip.append(makeEl("span", "no activities yet", "health-note"));
