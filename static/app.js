@@ -140,6 +140,7 @@ $("parse-btn").onclick = () =>
   });
 
 $("solve-btn").onclick = () => solveNow();
+$("fill-btn").onclick = () => fillNow();
 $("view-toggle").onclick = () => setView(!overview);
 $("group-select").onchange = (e) => setGroupMode(e.target.value);
 
@@ -159,6 +160,20 @@ $("extract-close").onclick = closeExtractModal;
 $("extract-cancel").onclick = closeExtractModal;
 $("extract-load").onclick = confirmExtractLoad;
 $("extract-modal").onclick = (e) => { if (e.target === $("extract-modal")) closeExtractModal(); }; // backdrop click
+
+// Ask the doc: Q&A over the last imported .docx (local RAG; answers cite the doc).
+$("doc-chat-open").onclick = () => { $("doc-chat-modal").hidden = false; $("doc-chat-input").focus(); };
+$("doc-chat-close").onclick = () => { $("doc-chat-modal").hidden = true; };
+$("doc-chat-modal").onclick = (e) => { if (e.target === $("doc-chat-modal")) $("doc-chat-modal").hidden = true; };
+$("doc-chat-send").onclick = () => askDoc();
+$("doc-chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") askDoc(); });
+
+// Plan assistant: natural-language edits through typed tools (validated + undoable).
+$("assistant-open").onclick = () => { $("assistant-modal").hidden = false; $("assistant-input").focus(); };
+$("assistant-close").onclick = () => { $("assistant-modal").hidden = true; };
+$("assistant-modal").onclick = (e) => { if (e.target === $("assistant-modal")) $("assistant-modal").hidden = true; };
+$("assistant-send").onclick = () => askAssistant();
+$("assistant-input").addEventListener("keydown", (e) => { if (e.key === "Enter") askAssistant(); });
 // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y = redo — but only when NOT typing in a field,
 // so a focused text input keeps its own native undo.
 document.addEventListener("keydown", (e) => {
@@ -233,6 +248,8 @@ $("roster-search").oninput = (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("extract-modal").hidden) closeExtractModal();
+  else if (!$("doc-chat-modal").hidden) $("doc-chat-modal").hidden = true;
+  else if (!$("assistant-modal").hidden) $("assistant-modal").hidden = true;
   else if (!$("library-modal").hidden) closeLibrary();
   else if (!$("constraint-modal").hidden) closeAddConstraintModal();
   else if (!$("constraints-modal").hidden) closeConstraintsList();
@@ -295,7 +312,33 @@ function solveNow() {
   const _pill = $("status");
   if (_pill) { _pill.textContent = "SOLVING…"; _pill.className = "pill pill-warn"; }
   return withBusy($("solve-btn"), "Solving…", async () => {
+    lastFill = null; // a live solve replaces any on-demand fill view
     renderResult(await post("/solve", solvePayload()));
+  });
+}
+
+// ---- fill mode (on demand) ------------------------------------------------
+// "Fill window" packs the horizon: every activity becomes optional and /fill keeps
+// the mix with the most scheduled minutes. A separate solve path — the live /solve
+// loop is untouched. The report is held here so renderHealth can show per-section
+// utilization; any normal solve clears it (the live view is back in charge).
+let lastFill = null;
+
+function fillNow() {
+  saveTabs();
+  const _pill = $("status");
+  if (_pill) { _pill.textContent = "PACKING…"; _pill.className = "pill pill-warn"; }
+  return withBusy($("fill-btn"), "Packing…", async () => {
+    const result = await post("/fill", solvePayload());
+    lastFill = result.fill || null;
+    renderResult(result);
+    const out = result.left_out || [];
+    if (out.length) {
+      flash(`Packed ${result.schedule.length} of ${result.schedule.length + out.length} — left out: ` +
+            out.slice(0, 6).join(", ") + (out.length > 6 ? ` +${out.length - 6} more` : ""));
+    } else if (result.schedule) {
+      flash(`Everything fits — ${result.schedule.length} scheduled`);
+    }
   });
 }
 
@@ -329,6 +372,7 @@ function showTimelinePlaceholder(msg) {
 
 function clearResult() {
   lastFeasibleSchedule = null;
+  lastFill = null;
   shownSchedule = null;
   shownStale = false;
   solvedHorizon = DAY;
@@ -761,8 +805,15 @@ function renderExtractReview(result) {
     summary.append(chip(`${ext.by_method.deterministic}/${nA}`, "durations by rule"));
   if (ext.dependencies) summary.append(chip(ext.dependencies.deterministic, "dependencies"));
   if (ext.dated_deadlines != null) summary.append(chip(ext.dated_deadlines, "deadlines"));
+  if (ext.rationales) summary.append(chip(ext.rationales, "rationales"));
   if (coverage.start_date) summary.append(chip(coverage.start_date, "project start"));
   if (coverage.horizon_days != null) summary.append(chip(coverage.horizon_days, "horizon (days)"));
+  // Schedule-genre docs (day tables + rule bullets) report different coverage.
+  if (coverage.genre === "schedule") {
+    if (coverage.n_rows != null) summary.append(chip(coverage.n_rows, "table rows"));
+    const bl = coverage.bullets || [];
+    summary.append(chip(`${bl.filter((b) => b.status === "modeled").length}/${bl.length}`, "rules modeled"));
+  }
   body.append(summary);
 
   // Coverage tripwires: requirements found in the doc but NOT extracted, or constraints pointing at a
@@ -772,6 +823,19 @@ function renderExtractReview(result) {
     flags.push(`${coverage.not_extracted.length} requirement(s) in the doc were NOT extracted: ${coverage.not_extracted.join(", ")}`);
   if (coverage.dangling_references && coverage.dangling_references.length)
     flags.push(`${coverage.dangling_references.length} constraint(s) reference a missing activity.`);
+  // Schedule genre: rule bullets we couldn't model, and self-check violations (the
+  // document's own timetable breaking one of the rules we extracted from it).
+  const unmodeled = (coverage.bullets || []).filter((b) => b.status === "unmodeled");
+  if (unmodeled.length)
+    flags.push(`${unmodeled.length} rule bullet(s) could not be modeled — shown in the notes, NOT enforced.`);
+  const selfCheck = coverage.self_check;
+  if (selfCheck && selfCheck.violations && selfCheck.violations.length) {
+    flags.push(`Self-check: the document's own timetable breaks ${selfCheck.violations.length} extracted rule(s) — it may contradict itself:`);
+    for (const v of selfCheck.violations.slice(0, 8))
+      flags.push(`   ${v.label || v.constraint} (day ${v.day + 1}): ${v.detail}`);
+    if (selfCheck.violations.length > 8)
+      flags.push(`   …and ${selfCheck.violations.length - 8} more.`);
+  }
   if (flags.length) {
     const box = makeEl("div", "", "extract-flags");
     for (const f of flags) box.append(makeEl("div", "⚠ " + f, "extract-flag"));
@@ -836,7 +900,10 @@ function extractConstraintsTable(cons) {
     tr.append(pt);
     tr.append(makeEl("td", c.type, "extract-mono"));
     tr.append(makeEl("td", extractConstraintDetail(c)));
-    tr.append(makeEl("td", c.source || c.label || "—", "extract-dim extract-src"));
+    const src = makeEl("td", "", "extract-dim extract-src");
+    src.append(makeEl("div", c.source || c.label || "—"));
+    if (c.rationale) src.append(makeEl("div", "why: " + c.rationale, "extract-why"));
+    tr.append(src);
     tb.append(tr);
   }
   return wrap;
@@ -851,7 +918,8 @@ function extractConstraintDetail(c) {
     if (c.day != null) parts.push(`day ${c.day + 1}`);
     return `${c.activity}${parts.length ? ": " + parts.join(", ") : ""}`;
   }
-  return c.label || c.type;
+  // Every other type reads best as the same one-liner the constraints table uses.
+  return constraintSummary(c) || c.label || c.type;
 }
 
 function oneCellRow(span, text) {
@@ -869,6 +937,83 @@ function fmtMinutes(m) {
   if (m % 1440 === 0) return `${m / 1440}d`;
   const h = Math.floor(m / 60), r = m % 60;
   return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+// ---- chat panels: Ask the doc (RAG) + Plan assistant (typed tools) --------
+// One bubble in a chat log. Everything is textContent (makeEl), never markup.
+function chatBubble(log, text, cls) {
+  const el = makeEl("div", text, "chat-msg " + cls);
+  log.append(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+// Ask a question about the last imported document. The server answers from the
+// document's own blocks and returns the source excerpts it used — shown under
+// the answer so every claim can be checked against the doc.
+async function askDoc() {
+  const input = $("doc-chat-input");
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = "";
+  const log = $("doc-chat-log");
+  chatBubble(log, q, "chat-user");
+  const busy = chatBubble(log, "Reading the document…", "chat-bot chat-busy");
+  try {
+    const r = await post("/doc_chat", { question: q });
+    busy.remove();
+    const bubble = chatBubble(log, r.answer, "chat-bot");
+    if (r.sources && r.sources.length) {
+      const src = makeEl("div", "", "chat-sources");
+      src.append(makeEl("div", "Sources:"));
+      for (const s of r.sources)
+        src.append(makeEl("div", `[${s.n}] ${s.section ? s.section + " — " : ""}${s.text.slice(0, 140)}`, "chat-source"));
+      bubble.append(src);
+    }
+    if (r.document) $("doc-chat-name").textContent = "· " + r.document;
+  } catch (e) {
+    busy.remove();
+    chatBubble(log, e.message, "chat-bot chat-error");
+  }
+}
+
+// Tell the assistant what to change. The server edits a COPY of the plan through
+// typed tools (each edit validated like a manual one) and returns the new scenario
+// + a list of what changed. Applying it goes through the same history/undo/re-solve
+// path as any hand edit, so Ctrl+Z takes it right back.
+async function askAssistant() {
+  const input = $("assistant-input");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  const log = $("assistant-log");
+  chatBubble(log, text, "chat-user");
+  const busy = chatBubble(log, "Working…", "chat-bot chat-busy");
+  try {
+    const r = await post("/assist", { message: text, scenario: solvePayload() });
+    busy.remove();
+    const bubble = chatBubble(log, r.reply || "Done.", "chat-bot");
+    if (r.actions && r.actions.length) {
+      const acts = makeEl("div", "", "chat-actions");
+      acts.append(makeEl("div", "Changes:"));
+      for (const a of r.actions) acts.append(makeEl("div", "• " + a));
+      bubble.append(acts);
+    }
+    if (r.changed && r.scenario) {
+      flushHistory(); // commit any pending edits as their own undo step first
+      const keepHorizon = scenario.horizon;
+      scenario = clone(r.scenario);
+      // solvePayload strips a cosmetic sub-day horizon; put it back unless the assistant set one.
+      if (scenario.horizon == null && keepHorizon) scenario.horizon = keepHorizon;
+      selectedId = null;
+      saveTabs();
+      render(); // re-render + live re-solve; recordHistory makes this one undo step
+      flash(`Assistant: ${r.actions.length} change(s) — Undo takes them back`);
+    }
+  } catch (e) {
+    busy.remove();
+    chatBubble(log, e.message, "chat-bot chat-error");
+  }
 }
 
 // ---- network ------------------------------------------------------------
@@ -2731,6 +2876,16 @@ function renderHealth(status, schedule, stale) {
     const tight = schedule.filter((s) => isTight(s, caps)).length;
     strip.append(makeEl("span", tight + " tight", "health-stat"));
     if (stale) strip.append(makeEl("span", "(showing last good plan)", "health-note"));
+
+    // After a "Fill window" run: per-section utilization (each section is a serial
+    // resource, so its capacity is the whole horizon) + how much didn't fit.
+    if (lastFill && !stale) {
+      strip.append(makeEl("span", "FILL", "health-pill health-ok"));
+      for (const [name, s] of Object.entries(lastFill.sections || {}))
+        strip.append(makeEl("span", `${name} ${s.pct}% · ${dur(s.left)} left`, "health-stat"));
+      const o = lastFill.overall || {};
+      if (o.overflow) strip.append(makeEl("span", `${dur(o.overflow)} didn't fit`, "health-stat health-over"));
+    }
   } else {
     strip.append(makeEl("span", "no activities yet", "health-note"));
   }

@@ -39,7 +39,7 @@ class DailyWindow(BaseModel):
 
 class Activity(BaseModel):
     id: str
-    duration: int  # minutes
+    duration: int = Field(ge=1)  # minutes; zero/negative would wedge the solver silently
     # Provenance + display, carried end-to-end so a human can verify each item against the source
     # document (filled by the doc-ingest path; empty for hand-built plans). The solver ignores both.
     label: str = ""    # human-readable name (id is snake_case)

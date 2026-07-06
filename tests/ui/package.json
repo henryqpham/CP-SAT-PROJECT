@@ -1,0 +1,9 @@
+{
+  "name": "planner-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "jsdom harness for the dashboard flows. One-time setup: npm install (node_modules stays untracked).",
+  "devDependencies": {
+    "jsdom": "^26.0.0"
+  }
+}

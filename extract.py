@@ -28,6 +28,7 @@ import re
 import ollama
 
 import extract_det as det
+import extract_sched
 from extract_det import index_requirements  # re-exported: part of the module's public surface
 from models import Scenario
 from parse import MODEL  # reuse the same local model + OLLAMA_MODEL override
@@ -171,16 +172,36 @@ def _run_residual(reqs, residual_ids, ask, progress, warnings):
     return llm_fill, calls
 
 
+def detect_genre(blocks: list[dict]) -> str:
+    """Which kind of document is this? "spec" (bracketed [VR-xxx] requirements) or
+    "schedule" (day tables with Start/End/Activity columns). A doc with requirement
+    definitions is a spec even if it also has tables — the backbone wins."""
+    if index_requirements(blocks):
+        return "spec"
+    if extract_sched.has_schedule_tables(blocks):
+        return "schedule"
+    return "spec"
+
+
 # --------------------------------------------------------------------------- #
 # Orchestration: deterministic backbone + scoped residual + merge + reconcile.
 # --------------------------------------------------------------------------- #
 def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     """blocks (from ingest.extract_blocks) -> {scenario, coverage, warnings}.
 
+    Auto-detects the document genre: a requirements SPEC runs the deterministic-first
+    backbone below (rules, then a scoped local-model residual); an ops SCHEDULE doc
+    (day tables + rule bullets) runs extract_sched — fully deterministic, no model.
+
     `ask(prompt)->dict` is injectable so the pipeline is testable without Ollama; it is
     invoked ONLY for residual requirements rules could not resolve (often zero calls).
     `progress(i, n, label)` (optional) reports residual-pass progress.
     """
+    if detect_genre(blocks) == "schedule":
+        if progress:
+            progress(1, 1, "schedule genre — deterministic, no model call")
+        return extract_sched.extract_schedule(blocks)
+
     warnings: list[str] = []
     reqs = index_requirements(blocks)            # backbone: every defined [VR-xxx]
     id_set = set(reqs)                            # raw req ids that actually exist
@@ -191,6 +212,7 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     det_edges = det.dependency_edges(reqs)                 # (before_raw, after_raw, phrase)
     captured = {(b, a) for (b, a, _s) in det_edges}
     xref = det.cross_reference_audit(reqs, id_set, captured)  # narration vs ambiguous off-format refs
+    rationales = {rid: det.parse_rationale(info["text"]) for rid, info in reqs.items()}
 
     # ---- RESIDUAL SELECTION: only the fields rules left open (a missing duration/resource) ----
     residual_ids = [
@@ -211,6 +233,7 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     defaulted = []  # human-facing raw ids whose duration was guessed (coverage compatibility)
     dur_by_method = {"deterministic": [], "llm": [], "default": []}
     res_by_method = {"deterministic": [], "llm": [], "none": []}
+    merged_resource = {}  # rid -> the resource that won (rule or llm), for the new constraint types
     for rid, info in reqs.items():
         df = det_fields[rid]
         fill = llm_fill.get(rid, {})
@@ -229,6 +252,7 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
             resource, rmethod = fill["resource"], "llm"
         else:
             resource, rmethod = None, "none"
+        merged_resource[rid] = resource
 
         activities.append({
             "id": info["id"],
@@ -269,6 +293,8 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
             "type": "precedence", "before": det.norm_id(before_raw), "after": det.norm_id(after_raw),
             "enabled": True, "label": f"{after_raw} after {before_raw}", "source": source.strip()[:200],
             "priority": infer_priority(source),
+            # the WHY comes from the requirement that states the dependency
+            "rationale": rationales.get(after_raw, ""),
         })
 
     for before_raw, after_raw, src in det_edges:
@@ -287,7 +313,56 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
         c["latest_end"] = moment["time"]
         c["day"] = moment["day"]
         c["priority"] = infer_priority(c.get("source", ""))
+        c["rationale"] = rationales.get(c.pop("req_id", ""), "")
     constraints += deadline_cons
+
+    # ---- STATED operating windows / budgets / overlaps (deterministic) ----
+    windows = det.working_windows(reqs)
+    kept_windows = []
+    for rid, open_t, close_t, phrase in windows:
+        if not merged_resource.get(rid):
+            # No resource to scope it to. Falling back to "all" would turn one
+            # requirement's hours into a plan-wide curfew — skip and say so.
+            warnings.append(f"{rid} states operating hours but names no resource — skipped")
+            continue
+        kept_windows.append(rid)
+        constraints.append({
+            "type": "working_window",
+            "section": det.snake(merged_resource[rid]),
+            "open": open_t, "close": close_t, "enabled": True,
+            "label": f"{rid} hours {open_t}–{close_t}", "source": phrase[:200],
+            "priority": infer_priority(phrase), "rationale": rationales.get(rid, ""),
+        })
+
+    budgets = det.section_budgets(reqs)
+    kept_budgets = []
+    for rid, minutes, phrase in budgets:
+        if not merged_resource.get(rid):
+            warnings.append(f"{rid} states a total time cap but names no resource — skipped")
+            continue
+        kept_budgets.append(rid)
+        constraints.append({
+            "type": "section_budget", "section": det.snake(merged_resource[rid]),
+            "max_minutes": minutes, "enabled": True,
+            "label": f"{rid} total ≤ {minutes} min", "source": phrase[:200],
+            "priority": infer_priority(phrase), "rationale": rationales.get(rid, ""),
+        })
+
+    overlaps = det.overlap_edges(reqs)
+    kept_overlaps = []
+    for rid, ref_raw, mode, phrase in overlaps:
+        if ref_raw not in id_set:
+            warnings.append(f"{rid} overlaps unknown '{ref_raw}' — skipped")
+            continue
+        kept_overlaps.append(rid)
+        constraints.append({
+            # "during [ref]": the referenced activity covers this one
+            "type": "overlap", "outer": det.norm_id(ref_raw), "inner": det.norm_id(rid),
+            "mode": mode, "enabled": True,
+            "label": f"{rid} {'during' if mode == 'contains' else 'concurrent with'} {ref_raw}",
+            "source": phrase[:200],
+            "priority": infer_priority(phrase), "rationale": rationales.get(rid, ""),
+        })
 
     # Horizon floor: cover the work even if the doc states no dates.
     sum_dur = sum(a["duration"] for a in activities)
@@ -317,6 +392,11 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     coverage["extraction"] = _extraction_report(
         dur_by_method, res_by_method, n_precedence, deadline_cons,
         residual_ids, reqs, llm_calls, xref)
+    coverage["extraction"]["working_windows"] = len(kept_windows)
+    coverage["extraction"]["section_budgets"] = len(kept_budgets)
+    coverage["extraction"]["overlaps"] = len(kept_overlaps)
+    coverage["extraction"]["rationales"] = sum(1 for r in rationales.values() if r)
+    coverage["genre"] = "spec"
     coverage["start_date"] = start_date  # derived project start (display-only; not part of the IR)
     coverage["horizon_days"] = horizon_days  # the day-count behind the minutes horizon (for the UI)
 
@@ -371,6 +451,12 @@ def _reconcile(blocks, reqs, scenario, defaulted, warnings) -> dict:
             refs = [c.activity]
         elif c.type == "sequence":
             refs = list(c.activities)
+        elif c.type == "overlap":
+            refs = [c.outer, c.inner]
+        elif c.type == "time_lag":
+            refs = [c.from_id, c.to_id]
+        elif c.type == "min_separation":
+            refs = [c.a, c.b]
         for r in refs:
             if r not in activity_ids:
                 dangling.append({"constraint": c.id, "missing": r})

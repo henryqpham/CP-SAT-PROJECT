@@ -127,7 +127,9 @@ def _classify(text, is_heading):
     return kind, req_ids, dates, is_shall
 
 
-def _block(index, kind, section_path, text, req_ids, dates, is_shall):
+def _block(index, kind, section_path, text, req_ids, dates, is_shall, **extra):
+    # `extra` carries optional structure hints: is_bullet on paragraphs,
+    # table/row/col on table cells (so a schedule table can be rebuilt).
     return {
         "index": index,
         "kind": kind,
@@ -136,6 +138,7 @@ def _block(index, kind, section_path, text, req_ids, dates, is_shall):
         "requirement_ids": req_ids,
         "dates": dates,
         "is_shall": is_shall,
+        **extra,
     }
 
 
@@ -162,7 +165,8 @@ def extract_blocks(file_like):
     `file_like` is anything python-docx's Document() accepts (an in-memory stream
     or an open file) — we never touch disk. Returns:
         {"blocks": [ {index, kind, section_path, text,
-                      requirement_ids, dates, is_shall}, ... ],
+                      requirement_ids, dates, is_shall,
+                      is_bullet (paragraphs), table/row/col (table cells)}, ... ],
          "coverage": {requirement_ids, sections, n_blocks,
                       n_requirements, n_dates, n_shall}}
     """
@@ -170,7 +174,12 @@ def extract_blocks(file_like):
     if isinstance(data, str):
         data = data.encode()
     _guard_zip_bomb(data)
-    doc = Document(io.BytesIO(data))  # parse from memory (caller's stream may be transient)
+    try:
+        doc = Document(io.BytesIO(data))  # parse from memory (caller's stream may be transient)
+    except Exception as e:
+        # Not a real .docx (garbage bytes, a renamed PDF, a zip that isn't a Word file).
+        # Raise ValueError so the /extract route can answer with a clean 400.
+        raise ValueError(f"not a valid .docx file ({type(e).__name__})")
 
     blocks = []
     section_path = []          # running heading breadcrumb, e.g. ["4 ...", "4.2 ..."]
@@ -189,6 +198,7 @@ def extract_blocks(file_like):
     # Walk the body in document order so paragraphs and tables stay interleaved.
     # Reading <w:p>/<w:tbl> off the body element skips headers/footers (page-number
     # noise lives there, not in the body).
+    table_index = 0  # 0-based, in document order — rides on each cell block
     for child in doc.element.body.iterchildren():
         tag = child.tag.rsplit("}", 1)[-1]  # strip the {namespace}
 
@@ -209,8 +219,12 @@ def extract_blocks(file_like):
                     seen_sections.add(text)
                     sections.append(text)
 
+            # A bulleted/numbered list line ("List Bullet" style) is usually a rule
+            # statement in a schedule doc; tag it so extractors can find them.
+            style = (para.style.name or "") if para.style else ""
             blocks.append(_block(len(blocks), kind, section_path, text,
-                                 req_ids, dates, is_shall))
+                                 req_ids, dates, is_shall,
+                                 is_bullet=style.startswith("List")))
             note_ids(req_ids)
             if kind == "requirement":
                 n_requirements += 1
@@ -220,10 +234,11 @@ def extract_blocks(file_like):
 
         elif tag == "tbl":
             # One block per non-empty cell, joining the cell's paragraphs. Cells
-            # carry the section breadcrumb in effect, but never change it.
+            # carry the section breadcrumb in effect, but never change it. table/
+            # row/col let an extractor rebuild the table (e.g. a day schedule).
             table = Table(child, doc)
-            for row in table.rows:
-                for cell in row.cells:
+            for r_i, row in enumerate(table.rows):
+                for c_i, cell in enumerate(row.cells):
                     text = "\n".join(p.text for p in cell.paragraphs).strip()
                     if not text:
                         continue
@@ -231,11 +246,13 @@ def extract_blocks(file_like):
                     dates = _find_dates(text)
                     is_shall = bool(re.search(r"\bshall\b", text, re.IGNORECASE))
                     blocks.append(_block(len(blocks), "table", section_path, text,
-                                         req_ids, dates, is_shall))
+                                         req_ids, dates, is_shall,
+                                         table=table_index, row=r_i, col=c_i))
                     note_ids(req_ids)
                     n_dates += len(dates)
                     if is_shall:
                         n_shall += 1
+            table_index += 1
 
     return {
         "blocks": blocks,

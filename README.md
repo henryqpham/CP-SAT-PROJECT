@@ -16,11 +16,14 @@ app and how CP-SAT works.
 
 ## Status
 
-A manual base is working, the schedule spans a custom **multi-day horizon**, and a first
-**document-ingest** path is in: drop in a `.docx` requirements spec and a deterministic, rules-first
-pass extracts its activities + constraints for you to **review** before they load (the local Ollama
-model is only a fallback for a field the rules can't read). The rest of the MVP (the fill objective,
-crew-parallel sections) builds on top of it.
+A manual base is working, the schedule spans a custom **multi-day horizon**, and the
+**document-ingest** path reads two document genres: a `.docx` requirements **spec** ([VR-xxx] +
+"shall") and an ops **schedule** doc (day tables + rule bullets) — the genre is auto-detected and
+both flow through the same **review** modal before anything loads. On top of that: a **Fill window**
+solve mode (pack the horizon, %-filled per section), **Ask the doc** (Q&A over the imported
+document, every answer cites its source blocks), a **plan assistant** (natural-language edits
+through typed, validated tools), and a committed test suite (`python run_tests.py`). Everything
+AI runs on local Ollama; the app works fine without it.
 
 **The MVP (the goal):** drop in a large document → a local Ollama model parses it into many
 activities, each with its own constraints → pick which to add → schedule them across a **multi-day,
@@ -43,19 +46,35 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
 - When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
   rules (with one-click disable). Load the **Lake day (over-constrained)** example to see it.
 - Undo/redo, plus duplicate a plan and export/import it as a JSON file (all local, no cloud).
-- **Document ingest** — import a `.docx` requirements spec (topbar **📄 Import doc**). A deterministic
-  rules-first pass (`ingest.py` → `extract_det.py` → `extract.py`) reads durations, resources,
-  dependencies and dated deadlines straight into the IR; the local Ollama model is used **only** for a
-  residual field a rule couldn't read. You **review** the extracted activities + constraints (and a
-  coverage report) before they load into a new plan — nothing is scheduled unreviewed. See `/extract`.
+- **Document ingest, two genres** — import a `.docx` (topbar **📄 Import doc**); `/extract` auto-detects
+  the genre. A requirements **spec** runs the deterministic rules-first pass (`ingest.py` →
+  `extract_det.py` → `extract.py`): durations, resources, dependencies, dated deadlines, stated
+  operating hours (`working_window`), aggregate time caps (`section_budget`), "during/concurrent
+  with" overlaps, a `Rationale:` line onto every derived rule, and RFC-2119 priority grading
+  (shall=1, should=3, may=5); local Ollama fills **only** a residual field a rule couldn't read.
+  An ops **schedule** doc (day tables + rule bullets, see `testdata/artemis_3day_schedule.docx`)
+  runs `extract_sched.py`, fully deterministic: the bullets become the RULES (adjacency, max-gaps,
+  awake-span caps, buffers, daily windows) and the tables become the ROSTER (recurring vs per-day
+  activities) — the printed times are **not** pinned; instead a **self-check** verifies the doc's
+  own timetable against the extracted rules and flags any contradiction. Both genres flow through
+  the same **review** modal (coverage, warnings, self-check) before loading into a new plan.
+- **Fill window** — an on-demand packing solve (`/fill`, topbar **⤒ Fill window**): every activity
+  becomes optional and the solver keeps the mix with the most scheduled minutes. The health bar then
+  shows **%-filled per section** and what didn't fit. A separate solve path — the live solve loop and
+  its objective are untouched.
+- **Ask the doc** — Q&A over the last imported document (**💬 Ask the doc**). Local RAG: Ollama
+  embeddings (`OLLAMA_EMBED_MODEL`) over the ingested blocks, top-k retrieve, answer with the local
+  chat model — and every answer lists the source blocks it used. Extraction never uses RAG (it stays
+  a full sweep, so nothing buried in the doc is skipped).
+- **Plan assistant** — a chat box (**🤖 Assistant**) that edits the plan through typed tools
+  (add/remove activity, change duration, add/toggle a rule, solve, explain-infeasible) via local
+  Ollama tool-calling. Every change is validated by the same IR rules as a manual edit, applies
+  through undo/redo, live re-solves, and the panel lists exactly what changed.
 
 **Next, toward the MVP (not paused — the actual target):**
 
-- A fill / utilization objective so the solver packs the window (the North-Star "fill").
 - The crew / section model so many sections pack in parallel.
-- Extend the doc extractor to the newer constraint types (`time_lag`, `overlap`, `working_window`, …):
-  the first pass emits `precedence` + dated-deadline `time_window`s; more of the archive pipeline
-  (the document classifier, recurrence) is still on `archive/advanced-multiday-classifier`.
+- The priority end-state (weighted / tiered relaxation in its own solve path) — design pending.
 - The sentence-to-JSON `/parse` path stays dormant (ingest is document-first, not a chat box).
 
 ## How it works
@@ -76,13 +95,19 @@ No database, no build step, no npm. One Flask app serves the dashboard (`/`) plu
 endpoints:
 
 - **`/solve`** — takes the IR and returns a schedule from CP-SAT.
+- **`/fill`** — the packing solve: every activity optional, keep the most scheduled minutes; returns
+  the schedule plus a per-section utilization report and what was left out. On-demand only.
 - **`/explain`** — for an INFEASIBLE plan, returns the minimal set of conflicting constraint ids
   (deletion filtering: drop each rule and re-solve). Called on demand, not in the live solve loop.
 - **`/relax`** — for an INFEASIBLE plan, greedily drops the **lowest-priority** rules in the conflict
   (never a priority-1 rule) until it solves. On-demand, next to `/explain`.
-- **`/extract`** — upload a `.docx`; returns `{scenario, coverage, warnings}` from the deterministic
-  rules-first ingest (local Ollama only for a residual field). The dashboard shows it for **review**
-  before it loads into a plan, so a dropped or mis-read rule is caught before anything is scheduled.
+- **`/extract`** — upload a `.docx`; auto-detects the genre (requirements spec vs ops schedule) and
+  returns `{scenario, coverage, warnings}`. The dashboard shows it for **review** before it loads
+  into a plan, so a dropped or mis-read rule is caught before anything is scheduled.
+- **`/doc_chat`** — a question about the last imported document; answers from retrieved blocks with
+  the sources attached (local embeddings + local chat model; 503 when Ollama is down).
+- **`/assist`** — one assistant turn: the local model edits a copy of the posted scenario through
+  typed tools; returns the new scenario + a list of what changed (503 when Ollama is down).
 - **`/example[/<name>]`** — returns a hand-written demo scenario; `/examples` lists them.
 - **`/parse`** — the old sentence-to-JSON route, kept but **dormant** (AI is off for now).
 
@@ -93,8 +118,10 @@ flowchart LR
 
     subgraph FLASK["Flask app (app.py)"]
         direction TB
-        SOLVE["/solve<br/>CP-SAT (horizon-bounded)"]
-        EXTRACT["/extract<br/>ingest.py + extract_det.py + extract.py<br/>docx → activities + constraints<br/>(rules-first; Ollama residual only)"]
+        SOLVE["/solve + /fill<br/>CP-SAT (live solve · pack the window)"]
+        EXTRACT["/extract<br/>ingest.py → genre auto-detect<br/>spec: extract_det.py + extract.py<br/>schedule: extract_sched.py (+ self-check)"]
+        DOCCHAT["/doc_chat<br/>doc_chat.py — RAG over the doc<br/>(cited answers, local embeddings)"]
+        ASSIST["/assist<br/>assistant.py — typed tools<br/>(validated edits, local model)"]
         EXAMPLE["/example<br/>demo IR"]
         MODELS["models.py<br/>Pydantic IR"]
         PARSE["/parse<br/>(dormant — AI off)"]
@@ -102,9 +129,13 @@ flowchart LR
 
     FE -->|"edit (debounced auto-solve)"| SOLVE -->|schedule| FE
     FE -->|"Import doc"| EXTRACT -->|"{scenario, coverage} → review, then load"| FE
+    EXTRACT -.blocks stay in memory.-> DOCCHAT
+    FE -->|"Ask the doc"| DOCCHAT -->|"answer + sources"| FE
+    FE -->|"Assistant"| ASSIST -->|"new scenario + what changed"| FE
     FE -->|"Load example"| EXAMPLE -->|editable IR| FE
     MODELS -.validates.-> SOLVE
     MODELS -.validates.-> EXTRACT
+    MODELS -.validates.-> ASSIST
 ```
 
 Data flow: **manual grid entry (grouped by section) → live (debounced) CP-SAT → timeline → tweak
@@ -115,17 +146,22 @@ rule, watch it react — in any order.
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /solve (CP-SAT), /explain (why-infeasible), /relax (drop lowest-priority rules), /extract (.docx ingest), /example[/<name>] + /examples (demo IR). /parse kept but dormant.
+├── app.py               # Flask: / (dashboard), /solve, /fill (pack the window), /explain, /relax, /extract (.docx ingest, genre auto-detect), /doc_chat (ask the doc), /assist (plan assistant), /example[/<name>] + /examples. /parse kept but dormant.
 ├── models.py            # Pydantic IR: Activity (+ section, display-only assignee/type, provenance label/source) + constraint union — the JSON contract
-├── solver.py            # Scenario -> CP-SAT -> schedule (one day by default, or a multi-day horizon); each section becomes a one-at-a-time resource
-├── ingest.py            # .docx -> ordered, provenance-tagged blocks (headings, [VR-xxx] requirements, dates, "shall" clauses); in-memory, zip-bomb-guarded
-├── extract_det.py       # deterministic backbone: regex rules read duration/resource/dependencies/dated deadlines from the blocks (no LLM)
-├── extract.py           # orchestrates ingest+rules into a validated Scenario; local Ollama fills ONLY residual fields; adapts to the current IR + infers priority from RFC 2119 keywords
-├── testdata/            # sample_vehicle_requirements.docx (+ its generator) — a synthetic spec with two planted infeasibilities, for testing the ingest path
+├── solver.py            # Scenario -> CP-SAT: solve() (live), solve_fill() (pack, separate objective), explain_infeasible(), relax_by_priority()
+├── ingest.py            # .docx -> ordered, provenance-tagged blocks (headings, [VR-xxx], dates, "shall", bullets, table cells with row/col); in-memory, zip-bomb-guarded
+├── extract_det.py       # deterministic spec rules: duration/resource/dependencies/deadlines/rationale/working-hours/budgets/overlaps (no LLM)
+├── extract.py           # genre dispatch + the spec pipeline: rules first, local Ollama ONLY for residual fields; RFC-2119 priority grading
+├── extract_sched.py     # schedule-genre extraction: rule bullets + day tables -> rules + roster, plus the doc self-check (no LLM)
+├── doc_chat.py          # Ask the doc: local embeddings over the ingested blocks, cited answers (the one RAG feature)
+├── assistant.py         # plan assistant: local Ollama tool-calling over typed, IR-validated edit tools
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
-├── examples/lake.json   # hand-written IR to test /solve without any AI
-├── examples/lake_infeasible.json  # deliberately INFEASIBLE demo for the why-infeasible explainer
-├── examples/manifest.json # titles/descriptions for the example dropdown (served by /examples)
+├── testdata/            # sample_vehicle_requirements.docx (spec genre, planted VR-512 self-loop) + artemis_3day_schedule.docx (schedule genre) + the spec generator
+├── examples/            # lake.json (smoke), lake_infeasible.json (explainer demo), nasa_mission_3day.json, manifest.json
+├── tests/               # the pytest suite (solver, IR, extractors, routes, fill, chat, assistant)
+├── tests/ui/            # jsdom dashboard tests (node --test); one-time `npm install` there, node_modules stays untracked
+├── run_tests.py         # ONE command for everything: backend pytest + the UI tests
+├── pytest.ini
 ├── templates/index.html
 ├── static/app.js        # the grid + live timeline; edits auto-solve via /solve
 ├── static/library.json  # runtime data: activity templates + type colors + the timeline's activity-kind palette (icons + id→kind match) + label abbreviations (no content baked into the JS)
@@ -133,7 +169,7 @@ CP-SAT-PROJECT/
 ├── static/artemis-logo.png  # topbar logo
 ├── static/earthrise.jpg     # darkened background photo behind the app
 ├── requirements.txt
-└── .env.example         # OLLAMA_MODEL= (only for the dormant AI path)
+└── .env.example         # OLLAMA_MODEL= / OLLAMA_EMBED_MODEL= (local models only)
 ```
 
 `solver.py` is the CP-SAT core — it turns each constraint into a CP-SAT call (`add_no_overlap`,
@@ -180,8 +216,8 @@ drop (never a priority-1 rule) to make an INFEASIBLE plan fit. The constraint ty
   order. Unlike `no_overlap` (which lets activities touch, end == start), this forces a real buffer
   — e.g. *exercise ≥ 30m from a meal*, *≥ 10m between every activity*.
 
-An **`Activity`** is an `id` and a `duration` in minutes, plus (new for the MVP) an optional
-**`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized
+An **`Activity`** is an `id` and a `duration` in minutes (at least 1), plus (new for the MVP) an
+optional **`section`** — free text like `"Deli"`. Activities sharing a section are automatically serialized
 (they can't overlap), which is what makes the what-if real: drop a second task into a busy section
 and watch the timeline stretch or go red.
 
@@ -238,16 +274,33 @@ pip install -r requirements.txt
 flask --app app run --debug     # dashboard at http://localhost:5000
 ```
 
-No AI and no API key are needed for the MVP — the dashboard, `/solve`, and `/example` run with
-nothing external. (The dormant AI path needs Ollama: `ollama pull granite4.1:8b`, override the
-model with `OLLAMA_MODEL` — only if you re-enable `/parse`.)
+Run the whole test suite with one command:
+
+```powershell
+python run_tests.py             # backend pytest + the jsdom UI tests
+```
+
+(The UI part needs Node plus a one-time `npm install` inside `tests/ui`; without it, that part
+reports SKIP and the backend tests still run.)
+
+No AI and no API key are needed for the core — the dashboard, `/solve`, `/fill`, and `/example` run
+with nothing external, and a `.docx` import is deterministic for both genres. The AI features (the
+extraction residual fallback, **Ask the doc**, the **assistant**) need local Ollama:
+`ollama pull granite4.1:8b` (chat, override with `OLLAMA_MODEL`) and
+`ollama pull nomic-embed-text` (embeddings, override with `OLLAMA_EMBED_MODEL`). When Ollama is
+down those features answer with a clean error and everything else keeps working.
 
 ## Notes
 
 - Local-only — no database, no auth, no hosting (privacy: data stays on the machine; an imported
-  `.docx` is parsed in memory and never leaves the machine).
-- You build plans by hand or import a `.docx` (deterministic rules first, local Ollama only as a
-  residual fallback). The sentence-based `/parse` chat path stays dormant — ingest is document-first.
+  `.docx` is parsed in memory and never leaves the machine; the doc blocks for Ask-the-doc live in
+  process memory only).
+- Three separate AI mechanisms, all local Ollama: doc **extraction** is a deterministic full sweep
+  (LLM only for residual fields — never RAG, so nothing buried in a long doc is skipped);
+  **Ask the doc** is the one RAG feature (retrieval + cited answers); the **assistant** is
+  tool-calling (typed, validated edits). The sentence-based `/parse` chat path stays dormant.
+- The **Fill window** packer is its own solve path (`solve_fill`); the live solve's keep−tidy
+  objective is deliberately left untouched.
 - A first pass of the `.docx` ingest pipeline is revived from `archive/advanced-multiday-classifier`
   (see `ingest.py` / `extract_det.py` / `extract.py`); the rest of that branch (the schedule-vs-context
   classifier, recurrence) stays there for later.

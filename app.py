@@ -12,9 +12,11 @@ from pydantic import ValidationError  # noqa: E402
 
 from models import Scenario  # noqa: E402
 from parse import parse_sentence  # noqa: E402
-from solver import explain_infeasible, relax_by_priority, solve  # noqa: E402
+from solver import explain_infeasible, relax_by_priority, solve, solve_fill  # noqa: E402
 from ingest import extract_blocks  # noqa: E402
 from extract import extract_document  # noqa: E402
+import doc_chat  # noqa: E402
+from assistant import assist  # noqa: E402
 
 app = Flask(__name__)
 # Dev: don't let the browser cache static JS/CSS, so code edits show on a normal refresh
@@ -108,6 +110,16 @@ def relax_route():
     return jsonify(relax_by_priority(scenario))
 
 
+@app.post("/fill")
+def fill_route():
+    # On-demand "pack the window": every activity becomes optional and the solver keeps
+    # the mix with the most scheduled minutes. A separate path from the live /solve.
+    scenario, err = _scenario_or_error(request.get_json(silent=True))
+    if err:
+        return err
+    return jsonify(solve_fill(scenario))
+
+
 @app.post("/extract")
 def extract_route():
     # Ingest an uploaded .docx into a review-ready scenario (deterministic rules first, local Ollama
@@ -122,12 +134,52 @@ def extract_route():
         return jsonify({"error": "Only .docx documents are supported (not PDF/DOC)."}), 400
     try:
         blocks = extract_blocks(file.stream)
-        return jsonify(extract_document(blocks["blocks"]))
+        result = extract_document(blocks["blocks"])
+        # Remember the blocks (in memory only) so "Ask the doc" can answer about them.
+        doc_chat.index_document(blocks["blocks"], file.filename)
+        return jsonify(result)
     except ValueError as e:  # not a real .docx, or the zip-bomb guard tripped
         return jsonify({"error": f"Couldn't read that document: {e}"}), 400
     except Exception:  # unexpected parse failure — keep the message generic, don't leak a stack trace
         return jsonify({"error": "Extraction failed while reading the document. "
                                  "Check that it's a valid .docx and try again."}), 500
+
+
+@app.post("/doc_chat")
+def doc_chat_route():
+    # Q&A over the last imported document (RAG: local embeddings + local chat model,
+    # answers always cite their source blocks). Degrades like /parse when Ollama is down.
+    question = (request.json or {}).get("question", "").strip()
+    if not question:
+        return jsonify({"error": "Type a question first."}), 400
+    try:
+        return jsonify(doc_chat.ask_document(question))
+    except LookupError as e:  # nothing imported yet
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:  # Ollama not running / model not pulled
+        return jsonify({"error": str(e)}), 503
+    except Exception:
+        return jsonify({"error": "The model couldn't answer that. Try rephrasing."}), 502
+
+
+@app.post("/assist")
+def assist_route():
+    # The plan assistant: the local model edits a COPY of the posted scenario through
+    # typed tools (each change re-validated by the IR). The browser applies the returned
+    # scenario through the normal undo/re-solve path. Ollama down -> 503, app fine.
+    body = request.get_json(silent=True) or {}
+    message = (body.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Type a request first."}), 400
+    scenario, err = _scenario_or_error(body.get("scenario"))
+    if err:
+        return err
+    try:
+        return jsonify(assist(message, scenario))
+    except RuntimeError as e:  # Ollama not running / model not pulled
+        return jsonify({"error": str(e)}), 503
+    except Exception:
+        return jsonify({"error": "The assistant couldn't process that. Try rephrasing."}), 502
 
 
 if __name__ == "__main__":

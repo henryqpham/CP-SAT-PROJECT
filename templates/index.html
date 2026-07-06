@@ -20,6 +20,7 @@
             <option value="">Load an example…</option>
           </select>
           <button type="button" id="solve-btn" class="btn btn-primary">Solve now</button>
+          <button type="button" id="fill-btn" class="btn btn-ghost" title="Pack the window: every activity becomes optional and the solver keeps the mix with the most scheduled minutes (on-demand, doesn't change the live solve)">⤒ Fill window</button>
         </div>
       </header>
 
@@ -36,6 +37,9 @@
         <span class="plan-actions-sep" aria-hidden="true"></span>
         <button type="button" id="plan-import-doc" class="btn btn-ghost btn-sm" title="Import a .docx requirements document — extract its activities + constraints to review">📄 Import doc</button>
         <input type="file" id="plan-import-doc-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+        <button type="button" id="doc-chat-open" class="btn btn-ghost btn-sm" title="Ask questions about the last imported document (local model, answers cite the document)">💬 Ask the doc</button>
+        <span class="plan-actions-sep" aria-hidden="true"></span>
+        <button type="button" id="assistant-open" class="btn btn-ghost btn-sm" title="Tell the assistant what to change in the plan (local model; every edit is validated, undoable, and re-solved)">🤖 Assistant</button>
       </div>
 
       <div id="alert" class="alert" role="alert" hidden></div>
@@ -226,6 +230,40 @@
           <span id="extract-foot-note" class="extract-foot-note"></span>
           <button type="button" id="extract-cancel" class="btn btn-ghost btn-sm">Cancel</button>
           <button type="button" id="extract-load" class="btn btn-primary btn-sm">Load into new plan</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ask the doc: Q&A over the last imported .docx. Local models only; every answer
+         cites the source blocks it was built from, so it can be checked against the doc. -->
+    <div id="doc-chat-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-label="Ask the document">
+        <div class="modal-head">
+          <h2 class="modal-title">Ask the doc <span id="doc-chat-name" class="chat-doc-name"></span></h2>
+          <button type="button" id="doc-chat-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div id="doc-chat-log" class="modal-body chat-log" aria-live="polite"></div>
+        <div class="modal-foot chat-foot">
+          <input id="doc-chat-input" class="chat-input" type="text"
+                 placeholder="e.g. How long is sleep, and what must happen right before it?" />
+          <button type="button" id="doc-chat-send" class="btn btn-primary btn-sm">Ask</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Plan assistant: natural-language edits through typed tools. Every change is
+         validated by the same IR rules as a manual edit, lands in undo/redo, and re-solves. -->
+    <div id="assistant-modal" class="modal-backdrop" hidden>
+      <div class="modal modal-chat" role="dialog" aria-modal="true" aria-label="Plan assistant">
+        <div class="modal-head">
+          <h2 class="modal-title">Plan assistant</h2>
+          <button type="button" id="assistant-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div id="assistant-log" class="modal-body chat-log" aria-live="polite"></div>
+        <div class="modal-foot chat-foot">
+          <input id="assistant-input" class="chat-input" type="text"
+                 placeholder="e.g. add a 30 minute break in the Deli after lunch" />
+          <button type="button" id="assistant-send" class="btn btn-primary btn-sm">Send</button>
         </div>
       </div>
     </div>

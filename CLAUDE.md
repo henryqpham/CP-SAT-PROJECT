@@ -10,17 +10,23 @@ architecture and data flow.
 
 - Install deps: `pip install -r requirements.txt`
 - Run: `flask --app app run --debug` — dashboard at http://localhost:5000
+- Test EVERYTHING: `python run_tests.py` (backend pytest + jsdom UI tests; UI part needs a one-time
+  `npm install` inside tests/ui). Backend only: `python -m pytest`.
 - Normal use (no LLM): build a plan in the dashboard (or load the lake example), or POST a scenario JSON body to `/solve`
-- Dormant `/parse` only: needs Ollama (install from ollama.com, then `ollama pull granite4.1:8b`).
+- AI features (extract residual fields, `/doc_chat`, `/assist`; dormant `/parse`): needs Ollama
+  (install from ollama.com, then `ollama pull granite4.1:8b` and `ollama pull nomic-embed-text`).
 
 ## Structure
 
-- `app.py` — Flask routes: `/` (dashboard), `/solve` (CP-SAT), `/example[/<name>]` + `/examples` (demo IR + dropdown manifest). `/parse` (Ollama) is kept but dormant.
+- `app.py` — Flask routes: `/` (dashboard), `/solve`, `/fill` (pack the window), `/explain`, `/relax`, `/extract` (.docx ingest, genre auto-detect), `/doc_chat`, `/assist`, `/example[/<name>]` + `/examples`. `/parse` (Ollama) is kept but dormant.
 - `models.py` — Pydantic IR; the JSON contract shared by the dashboard and `/solve` (and dormant `/parse`)
 - `parse.py` — DORMANT: a local Ollama model turns a sentence into a validated `Scenario` (off for the MVP)
-- `solver.py` — turns a `Scenario` into a CP-SAT model and solves it
+- `solver.py` — `Scenario` -> CP-SAT: `solve()` (live), `solve_fill()` (packing, separate objective), `explain_infeasible()`, `relax_by_priority()`
+- `ingest.py` / `extract_det.py` / `extract.py` / `extract_sched.py` — the .docx pipeline (blocks -> genre dispatch -> spec rules or schedule rules)
+- `doc_chat.py` — Ask the doc (local RAG with cited sources); `assistant.py` — plan assistant (typed tool-calling)
 - `templates/index.html`, `static/app.js`, `static/style.css` — the vanilla-JS dashboard
 - `static/library.json` — runtime data for the activity library (types + templates); no content is hardcoded in the JS
+- `tests/` + `tests/ui/` + `run_tests.py` — the permanent suite (suite tests stay; scratch probes still get deleted)
 
 ## Conventions
 
@@ -43,7 +49,8 @@ architecture and data flow.
 
 ## Testing
 
-- After a change, run `examples/lake.json` through `/solve`: it must return `OPTIMAL`.
-- Set `drive_to_lake.earliest` to `21:00` while `drive_home.latest_end` is `22:00`; `/solve` must
-  return `INFEASIBLE`. Use this as the smoke test for constraint handling.
-- Delete any temporary test code after running it.
+- After a change, run the suite: `python run_tests.py` must be green. It already covers the
+  classic smokes (lake `OPTIMAL`; lake with `drive_to_lake.earliest` = `21:00` → `INFEASIBLE`;
+  the sample spec doc 29/29; the artemis schedule doc oracle).
+- Every new feature adds its tests to `tests/` (and `tests/ui/` for dashboard flows) in the same change.
+- Suite tests are permanent. Scratch probes / temporary instrumentation still get deleted after use.

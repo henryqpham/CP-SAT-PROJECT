@@ -852,6 +852,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .extract-mono { font-family: var(--font-mono); color: var(--muted); white-space: nowrap; }
 .extract-dim { color: var(--muted); }
 .extract-src { max-width: 22rem; font-size: 0.76rem; }
+.extract-why { font-style: italic; opacity: 0.75; margin-top: 2px; }
+/* chat modals (Ask the doc + Plan assistant) */
+.modal-chat { width: min(680px, 92vw); }
+.chat-log { display: flex; flex-direction: column; gap: 0.5rem; min-height: 12rem; max-height: 55vh; overflow-y: auto; }
+.chat-msg { padding: 0.5rem 0.75rem; border-radius: var(--radius-sm); max-width: 92%; white-space: pre-wrap; font-size: 0.85rem; }
+.chat-user { align-self: flex-end; background: var(--surface-2); border: 1px solid var(--border); }
+.chat-bot { align-self: flex-start; background: var(--surface-1); border: 1px solid var(--border-faint); }
+.chat-busy { font-style: italic; color: var(--muted); }
+.chat-error { color: var(--bad); border-color: var(--bad-border); }
+.chat-sources, .chat-actions { margin-top: 0.4rem; font-size: 0.72rem; color: var(--muted); }
+.chat-source, .chat-actions div { margin-top: 2px; }
+.chat-foot { display: flex; gap: 0.5rem; }
+.chat-input { flex: 1; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--ink); padding: 0.45rem 0.6rem; font: inherit; }
+.chat-doc-name { color: var(--muted); font-size: 0.8rem; font-weight: normal; margin-left: 0.4rem; }
 .extract-empty { color: var(--muted); text-align: center; font-style: italic; padding: 0.8rem; }
 /* category filter chips (replaces the filter dropdown) */
 .lib-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; padding: 0.5rem 1.1rem; border-bottom: 1px solid var(--border); }

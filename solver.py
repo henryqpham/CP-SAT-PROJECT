@@ -14,28 +14,19 @@ def _to_minutes(hhmm: str) -> int:
     return int(hours) * 60 + int(minutes)
 
 
-def solve(scenario: Scenario) -> dict:
-    model = cp_model.CpModel()
-
-    # The planning window in minutes. With no horizon set it's one 24h day, so a
-    # plain scenario solves exactly as before. A bigger horizon just widens the
-    # window the activities can sit in (e.g. 2880 = 2 days); they still pack
-    # compactly toward the start.
-    horizon = scenario.horizon or DAY
-
+def _expand_occurrences(scenario: Scenario, horizon: int) -> list[dict]:
+    """Expand recurring activities into one OCCURRENCE per applicable day. A normal activity is a
+    single occurrence free across the whole horizon; a `recurs_daily` activity becomes one
+    occurrence per day, each clamped to its day's window — so "lunch" lands once on EVERY day with
+    no precedence wiring (the per-day spread is structural). Shared by solve() and solve_fill()."""
     n_days = max(1, horizon // DAY)
 
-    # Expand recurring activities into one OCCURRENCE per applicable day. A normal activity is a
-    # single occurrence free across the whole horizon; a `recurs_daily` activity becomes one
-    # occurrence per day, each clamped to its day's window — so "lunch" lands once on EVERY day with
-    # no precedence wiring (the per-day spread is structural). Constraints that name a recurring
-    # activity by id are skipped (its id isn't a key here; only its per-day occurrences are).
     def _day_bounds(a, d):
         o = _to_minutes(a.daily_window.open) if a.daily_window else 0
         cl = _to_minutes(a.daily_window.close) if a.daily_window else DAY
         return d * DAY + o, min(horizon, d * DAY + cl)
 
-    occurrences = []  # each: {id, src, duration, section, lo, hi}
+    occurrences = []  # each: {id, src, duration, section, lo, hi, day}
     for a in scenario.activities:
         if a.recurs_daily:
             for d in range(n_days):
@@ -49,21 +40,13 @@ def solve(scenario: Scenario) -> dict:
         else:
             occurrences.append({"id": a.id, "src": a.id, "duration": a.duration,
                                 "section": a.section, "lo": 0, "hi": horizon, "day": None})
+    return occurrences
 
-    base_duration = {o["id"]: o["duration"] for o in occurrences}
 
-    # Map each activity id to its occurrences (a one-off has one; a recurring activity has one per
-    # PLACED day, in day order). Relative-timing constraints resolve their endpoints through this so a
-    # rule naming a recurring activity by its bare id no longer silently no-ops (the exact bug that let
-    # a rule vanish while the plan still solved OPTIMAL).
-    occ_by_src = {}
-    for occ in occurrences:
-        occ_by_src.setdefault(occ["src"], []).append(occ)
-
-    # Look through the conditionals once to find two things:
-    #   - which activities are OPTIONAL (named in a conditional's "when"), and
-    #   - which activities change DURATION based on whether another activity
-    #     is present (a conditional's "then.set_duration").
+def _read_duration_rules(scenario: Scenario, base_duration: dict):
+    """Read the conditionals once. Returns (optional_ids, duration_rules):
+    which activities are OPTIONAL (named in a conditional's "when"), and which change
+    DURATION based on another activity's presence (a "then.set_duration")."""
     optional_ids = set()
     # duration_rules[activity_id] = {trigger activity, factor, when to apply it}
     duration_rules = {}
@@ -96,6 +79,32 @@ def solve(scenario: Scenario) -> dict:
                 "factor": factor,
                 "apply_when_present": bool(when.get("present", False)),
             }
+    return optional_ids, duration_rules
+
+
+def solve(scenario: Scenario) -> dict:
+    model = cp_model.CpModel()
+
+    # The planning window in minutes. With no horizon set it's one 24h day, so a
+    # plain scenario solves exactly as before. A bigger horizon just widens the
+    # window the activities can sit in (e.g. 2880 = 2 days); they still pack
+    # compactly toward the start.
+    horizon = scenario.horizon or DAY
+
+    n_days = max(1, horizon // DAY)
+
+    occurrences = _expand_occurrences(scenario, horizon)
+    base_duration = {o["id"]: o["duration"] for o in occurrences}
+
+    # Map each activity id to its occurrences (a one-off has one; a recurring activity has one per
+    # PLACED day, in day order). Relative-timing constraints resolve their endpoints through this so a
+    # rule naming a recurring activity by its bare id no longer silently no-ops (the exact bug that let
+    # a rule vanish while the plan still solved OPTIMAL).
+    occ_by_src = {}
+    for occ in occurrences:
+        occ_by_src.setdefault(occ["src"], []).append(occ)
+
+    optional_ids, duration_rules = _read_duration_rules(scenario, base_duration)
 
     starts = {}
     ends = {}
@@ -213,6 +222,57 @@ def solve(scenario: Scenario) -> dict:
         else:
             model.minimize(tidy)
 
+    _apply_constraints(model, scenario, occurrences, occ_by_src,
+                       starts, ends, intervals, presence, dur_terms, horizon)
+
+    solver = cp_model.CpSolver()
+    status = solver.solve(model)
+
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        schedule = []
+        for occ in occurrences:
+            oid = occ["id"]
+            # Skip optional occurrences the solver dropped; their start/end are meaningless.
+            present_var = presence.get(oid)
+            if present_var is not None and not solver.boolean_value(present_var):
+                continue
+            schedule.append(
+                {
+                    "id": oid,
+                    "start": solver.value(starts[oid]),
+                    "end": solver.value(ends[oid]),
+                    "source": occ["src"],
+                }
+            )
+        return {"status": "OPTIMAL", "schedule": schedule, "horizon": horizon}
+
+    if status == cp_model.INFEASIBLE:
+        return {"status": "INFEASIBLE"}
+
+    return {"status": "UNKNOWN"}
+
+
+def _apply_constraints(model, scenario, occurrences, occ_by_src,
+                       starts, ends, intervals, presence, dur_terms, horizon):
+    """Turn every enabled constraint into CP-SAT calls. Shared by solve() and
+    solve_fill(): the vars differ (fill makes every activity optional) but the
+    constraint semantics are identical. A bound touching an OPTIONAL activity is
+    gated on its presence literal(s), so a dropped activity makes the rule
+    vacuous — without the gate, a bound that can't fit the vars' domains (e.g. a
+    min_lag longer than the horizon) would sink the whole model even though the
+    activity isn't scheduled. Mandatory activities have no presence var, so
+    their bounds stay plain adds (solve()'s behavior is unchanged)."""
+    def lits_of(*oids):
+        # The presence literals guarding these occurrence ids (only optionals have one).
+        return [p for p in (presence.get(o) for o in oids) if p is not None]
+
+    def add_bound(bound, *oids):
+        lits = lits_of(*oids)
+        if lits:
+            model.add(bound).only_enforce_if(lits)
+        else:
+            model.add(bound)
+
     def occ_pairs(a_id, b_id, day_shift=0):
         # Aligned (a_occ_id, b_occ_id) pairs for a relative-timing constraint between two activity
         # ids. A one-off id yields its single key; recurring ids pair by day index (day_shift offsets
@@ -243,7 +303,7 @@ def solve(scenario: Scenario) -> dict:
         # `before` ends before `after` starts, paired per day for recurring activities (a bare
         # recurring id used to be silently skipped — a rule that vanished yet the plan still solved).
         for a_oid, b_oid in occ_pairs(before, after):
-            model.add(ends[a_oid] <= starts[b_oid])
+            add_bound(ends[a_oid] <= starts[b_oid], a_oid, b_oid)
 
     for c in scenario.constraints:
         if not c.enabled:
@@ -257,9 +317,9 @@ def solve(scenario: Scenario) -> dict:
                 continue
             offset = (c.day or 0) * DAY
             if c.earliest is not None:
-                model.add(starts[c.activity] >= offset + _to_minutes(c.earliest))
+                add_bound(starts[c.activity] >= offset + _to_minutes(c.earliest), c.activity)
             if c.latest_end is not None:
-                model.add(ends[c.activity] <= offset + _to_minutes(c.latest_end))
+                add_bound(ends[c.activity] <= offset + _to_minutes(c.latest_end), c.activity)
 
         elif c.type == "working_window":
             # A working window's CLOSED complement is forbidden time. Build fixed "closed"
@@ -316,34 +376,33 @@ def solve(scenario: Scenario) -> dict:
                     add_precedence(before, after)
 
         elif c.type == "overlap":
-            # Tie two activities together in time, paired per day for recurring activities. The
-            # relation is on the start/end vars, NOT gated by presence: if `inner` is an optional
-            # activity that gets dropped, the bound becomes vacuous rather than infeasible (same as
-            # precedence on an optional).
+            # Tie two activities together in time, paired per day for recurring activities.
+            # Gated on presence (add_bound): if either side is an optional activity that gets
+            # dropped, the tie becomes vacuous rather than infeasible (same as precedence).
             for a_oid, b_oid in occ_pairs(c.outer, c.inner):
                 if c.mode == "contains":
-                    model.add(starts[a_oid] <= starts[b_oid])  # outer fully covers inner
-                    model.add(ends[b_oid] <= ends[a_oid])
+                    add_bound(starts[a_oid] <= starts[b_oid], a_oid, b_oid)  # outer covers inner
+                    add_bound(ends[b_oid] <= ends[a_oid], a_oid, b_oid)
                 else:  # "overlaps": the two intervals share at least one minute
-                    model.add(starts[a_oid] < ends[b_oid])
-                    model.add(starts[b_oid] < ends[a_oid])
+                    add_bound(starts[a_oid] < ends[b_oid], a_oid, b_oid)
+                    add_bound(starts[b_oid] < ends[a_oid], a_oid, b_oid)
 
         elif c.type == "time_lag":
             # A relative-timing bound: lag = (to_anchor of to_id) - (from_anchor of from_id) minutes.
-            # Plain model.add on the start/end vars (no presence gating), so a dropped endpoint floats
-            # to satisfy the bound — vacuous, never infeasible. Recurring endpoints pair per day.
+            # Gated on the endpoints' presence lits (add_bound), so a dropped endpoint makes the
+            # bound vacuous, never infeasible. Recurring endpoints pair per day.
             for a_oid, b_oid in occ_pairs(c.from_id, c.to_id, c.day_shift):
                 a_var = ends[a_oid] if c.from_anchor == "end" else starts[a_oid]
                 b_var = starts[b_oid] if c.to_anchor == "start" else ends[b_oid]
                 lag = b_var - a_var
                 if c.min_lag is not None:
-                    model.add(lag >= c.min_lag)
+                    add_bound(lag >= c.min_lag, a_oid, b_oid)
                 elif c.max_lag is not None:
                     # A bare max-gap implies "to_id comes after from_id"; without this the solver could
                     # place to_id earlier (a negative lag) and satisfy the cap trivially.
-                    model.add(lag >= 0)
+                    add_bound(lag >= 0, a_oid, b_oid)
                 if c.max_lag is not None:
-                    model.add(lag <= c.max_lag)
+                    add_bound(lag <= c.max_lag, a_oid, b_oid)
 
         elif c.type == "min_separation":
             # Keep the pair >= gap apart in EITHER order (a both-directions disjunction; a single
@@ -375,31 +434,147 @@ def solve(scenario: Scenario) -> dict:
 
         # conditional: handled above when building the activity vars.
 
+
+# Fill mode can search harder than the live solve; keep it bounded so the button
+# always comes back. On-demand only — never in the live loop.
+FILL_TIME_LIMIT_SECONDS = 10
+
+
+def solve_fill(scenario: Scenario) -> dict:
+    """PACK the horizon: every activity becomes OPTIONAL and the solver keeps the mix
+    with the most total scheduled minutes that still satisfies every enabled rule.
+
+    This is a SEPARATE solve path from solve(). The live keep−tidy objective there is
+    deliberately fragile (a second term once caused the "pile on day 1" bug), so fill
+    gets its own model + its own single-term objective and never touches solve().
+
+    Returns {"status", "schedule", "horizon", "left_out", "fill"} where fill reports
+    utilization per section: each section is a one-at-a-time resource, so its capacity
+    is the whole horizon. Activities with no section share one "(no section)" bucket.
+    """
+    model = cp_model.CpModel()
+    horizon = scenario.horizon or DAY
+
+    occurrences = _expand_occurrences(scenario, horizon)
+    base_duration = {o["id"]: o["duration"] for o in occurrences}
+    occ_by_src = {}
+    for occ in occurrences:
+        occ_by_src.setdefault(occ["src"], []).append(occ)
+
+    _, duration_rules = _read_duration_rules(scenario, base_duration)
+
+    starts, ends, intervals, presence = {}, {}, {}, {}
+    dur_terms = {}   # per-occurrence busy-minutes term (0 when dropped)
+    for occ in occurrences:
+        oid = occ["id"]
+        lo, hi = occ["lo"], occ["hi"]
+        starts[oid] = model.new_int_var(lo, hi, f"start_{oid}")
+        ends[oid] = model.new_int_var(lo, hi, f"end_{oid}")
+        # Reuse a presence var an earlier duration rule already created for this id —
+        # minting a fresh one here would orphan the rule's trigger bool and let the
+        # objective pick the longer duration regardless of the trigger's real presence.
+        present = presence.get(oid)
+        if present is None:
+            present = model.new_bool_var(f"present_{oid}")
+            presence[oid] = present
+
+        rule = duration_rules.get(oid)
+        if rule is not None:
+            # Same variable-size reading as solve(): the trigger's presence picks the length.
+            base = base_duration[oid]
+            scaled = int(base * rule["factor"])
+            slo, shi = sorted((base, scaled))
+            size = model.new_int_var(slo, shi, f"size_{oid}")
+            trigger = presence.get(rule["trigger"])
+            if trigger is None:
+                trigger = model.new_bool_var(f"present_{rule['trigger']}")
+                presence[rule["trigger"]] = trigger
+            if rule["apply_when_present"]:
+                model.add(size == scaled).only_enforce_if(trigger)
+                model.add(size == base).only_enforce_if(trigger.Not())
+            else:
+                model.add(size == scaled).only_enforce_if(trigger.Not())
+                model.add(size == base).only_enforce_if(trigger)
+            intervals[oid] = model.new_optional_interval_var(
+                starts[oid], size, ends[oid], present, f"iv_{oid}")
+            # Busy minutes = size when kept, 0 when dropped (an int var, since size varies).
+            contrib = model.new_int_var(0, shi, f"busy_{oid}")
+            model.add(contrib == size).only_enforce_if(present)
+            model.add(contrib == 0).only_enforce_if(present.Not())
+            dur_terms[oid] = contrib
+        else:
+            intervals[oid] = model.new_optional_interval_var(
+                starts[oid], base_duration[oid], ends[oid], present, f"iv_{oid}")
+            dur_terms[oid] = base_duration[oid] * present
+
+    # Sections stay one-at-a-time resources (optional intervals drop out cleanly).
+    sections = {}
+    for occ in occurrences:
+        if occ["section"]:
+            sections.setdefault(occ["section"], []).append(intervals[occ["id"]])
+    for ivs in sections.values():
+        if len(ivs) >= 2:
+            model.add_no_overlap(ivs)
+
+    _apply_constraints(model, scenario, occurrences, occ_by_src,
+                       starts, ends, intervals, presence, dur_terms, horizon)
+
+    # The whole objective: schedule as many busy minutes as possible.
+    model.maximize(sum(dur_terms.values()))
+
     solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = FILL_TIME_LIMIT_SECONDS
     status = solver.solve(model)
 
-    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        schedule = []
-        for occ in occurrences:
-            oid = occ["id"]
-            # Skip optional occurrences the solver dropped; their start/end are meaningless.
-            present_var = presence.get(oid)
-            if present_var is not None and not solver.boolean_value(present_var):
-                continue
-            schedule.append(
-                {
-                    "id": oid,
-                    "start": solver.value(starts[oid]),
-                    "end": solver.value(ends[oid]),
-                    "source": occ["src"],
-                }
-            )
-        return {"status": "OPTIMAL", "schedule": schedule, "horizon": horizon}
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return {"status": "INFEASIBLE" if status == cp_model.INFEASIBLE else "UNKNOWN"}
 
-    if status == cp_model.INFEASIBLE:
-        return {"status": "INFEASIBLE"}
+    schedule, left_out = [], []
+    # Every bucket that HAS activities is reported — a section whose activities were
+    # all left out must still show up (used 0), not vanish from the report.
+    spans_by_section = {occ["section"] or "": [] for occ in occurrences}
+    for occ in occurrences:
+        oid = occ["id"]
+        if not solver.boolean_value(presence[oid]):
+            left_out.append(oid)
+            continue
+        start, end = solver.value(starts[oid]), solver.value(ends[oid])
+        schedule.append({"id": oid, "start": start, "end": end, "source": occ["src"]})
+        spans_by_section[occ["section"] or ""].append((start, end))
 
-    return {"status": "UNKNOWN"}
+    def merged_minutes(spans):
+        # Busy minutes as a merged union, so the "(no section)" bucket — whose
+        # activities may run in parallel — can never report more than the horizon.
+        total, cur_s, cur_e = 0, None, None
+        for s, e in sorted(spans):
+            if cur_e is None or s > cur_e:
+                total += (cur_e - cur_s) if cur_e is not None else 0
+                cur_s, cur_e = s, e
+            else:
+                cur_e = max(cur_e, e)
+        return total + ((cur_e - cur_s) if cur_e is not None else 0)
+
+    used_by_section = {b: merged_minutes(sp) for b, sp in spans_by_section.items()}
+    fill_sections = {}
+    for bucket, used in sorted(used_by_section.items()):
+        fill_sections[bucket or "(no section)"] = {
+            "capacity": horizon, "used": used,
+            "pct": round(100 * used / horizon, 1), "left": horizon - used,
+        }
+    total_used = sum(used_by_section.values())
+    capacity = horizon * max(1, len(used_by_section))
+    fill = {
+        "overall": {
+            "capacity": capacity, "used": total_used,
+            "pct": round(100 * total_used / capacity, 1) if capacity else 0.0,
+            "left": capacity - total_used,
+            # what didn't fit — the "over" signal: this many minutes want more horizon
+            "overflow": sum(base_duration[oid] for oid in left_out),
+        },
+        "sections": fill_sections,
+    }
+    return {"status": "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE",
+            "schedule": schedule, "horizon": horizon, "left_out": left_out, "fill": fill}
 
 
 def explain_infeasible(scenario: Scenario) -> dict:

@@ -65,6 +65,34 @@ _RESOURCE_PATTERNS = [
 ]
 _OWNER = re.compile(r"\bOwner:\s*([A-Za-z][A-Za-z \-]+?)(?=[.,;]|$)", re.I)
 
+# A "Rationale: ..." line inside a requirement body — the human WHY, carried onto
+# every constraint derived from that requirement (one line; bodies join with \n).
+_RATIONALE = re.compile(r"\bRationale:\s*(.+)", re.I)
+
+# Daily operating hours: "between 08:00 and 17:00" plus an operations word nearby
+# (so a lone pair of clock times in prose isn't turned into a window).
+_WINDOW = re.compile(
+    r"\b(?:between|from)\s+(\d{1,2}:\d{2})\s+(?:and|to|through|–|—|-)\s+(\d{1,2}:\d{2})\b", re.I)
+_WINDOW_CONTEXT = re.compile(
+    r"\b(?:daily|each day|every day|local time|hours|performed|conducted|testing|"
+    r"operations?|available|staffed|occur)\b", re.I)
+
+# A section time budget: needs an aggregate word ("total"/"combined"/"aggregate") so a
+# per-activity cap ("effort shall not exceed 3 days") is never misread as a budget.
+_BUDGET = re.compile(
+    r"\b(?:total|combined|aggregate)\b[^.]*?"
+    r"\b(?:shall not exceed|must not exceed|may not exceed|no more than|at most|"
+    r"capped at|limited to)\s+(\d+(?:\.\d+)?)\s*(hour|hr|day|week)s?\b", re.I)
+
+# A full HH:MM validity check mirroring the IR's validator, so a malformed clock
+# token ("8:75") skips that window instead of failing Scenario validation later.
+_HHMM_OK = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$|^24:00$")
+
+# Overlap-in-time with another requirement: "during [VR-x]" -> the referenced one
+# covers this one; "concurrent(ly)/in parallel with [VR-x]" -> they just share time.
+_OVERLAP = re.compile(
+    r"\b(?:(during)|(?:concurrent(?:ly)?|in\s+parallel)\s+with)\s+\[([A-Z]{2,}-\d+)\]", re.I)
+
 # Dates: ISO, "Month DD, YYYY", "DD Month YYYY". Months mapped locally (no dateutil).
 _DATE_PATTERNS = [
     (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "iso"),
@@ -121,6 +149,77 @@ def parse_duration(text: str) -> int | None:
     if not m:
         return None
     return int(round(float(m[1]) * _UNIT_MIN[m[2].lower()]))
+
+
+def parse_rationale(text: str) -> str:
+    """The requirement's 'Rationale: ...' line (first one), or ""."""
+    m = _RATIONALE.search(text)
+    return m.group(1).strip()[:300] if m else ""
+
+
+def _sentence(text: str, at: int) -> str:
+    """The sentence containing position `at` (bounded by periods/newlines). Keeps a
+    phrase's priority grading honest: a neighbouring sentence's 'shall' must not
+    override this sentence's 'should'/'may'."""
+    lo = max(text.rfind(".", 0, at), text.rfind("\n", 0, at)) + 1
+    hi = len(text)
+    for stop in (".", "\n"):
+        p = text.find(stop, at)
+        if p != -1:
+            hi = min(hi, p + 1)
+    return text[lo:hi].strip()
+
+
+def _pad_hhmm(t: str) -> str:
+    """'8:00' -> '08:00' (the IR wants two-digit hours)."""
+    return t.zfill(5)
+
+
+def working_windows(reqs: dict) -> list[tuple[str, str, str, str]]:
+    """Daily operating hours stated in a requirement: (req_id, open, close, phrase).
+
+    Only fires when the clock-time pair sits in a sentence with an operations word
+    ("daily", "performed", "testing hours", ...). Overnight (open > close) is allowed —
+    the IR wraps it."""
+    out = []
+    for rid, info in reqs.items():
+        for m in _WINDOW.finditer(info["text"]):
+            around = _sentence(info["text"], m.start())
+            if not _WINDOW_CONTEXT.search(around):
+                continue
+            o, c = _pad_hhmm(m.group(1)), _pad_hhmm(m.group(2))
+            if not _HHMM_OK.match(o) or not _HHMM_OK.match(c):
+                continue
+            out.append((rid, o, c, around))
+            break  # one window per requirement is plenty
+    return out
+
+
+def section_budgets(reqs: dict) -> list[tuple[str, int, str]]:
+    """Aggregate time caps: (req_id, max_minutes, phrase). The budgeted section is
+    resolved by the caller (the requirement's own resource)."""
+    out = []
+    for rid, info in reqs.items():
+        m = _BUDGET.search(info["text"])
+        if m:
+            minutes = int(round(float(m.group(1)) * _UNIT_MIN[m.group(2).lower()]))
+            out.append((rid, minutes, m.group(0)))
+    return out
+
+
+def overlap_edges(reqs: dict) -> list[tuple[str, str, str, str]]:
+    """Stated overlap-in-time: (req_id, referenced_raw_id, mode, phrase).
+
+    "during [VR-x]" -> mode "contains" (the referenced activity covers this one);
+    "concurrent with [VR-x]" / "in parallel with [VR-x]" -> mode "overlaps".
+    The phrase is the containing sentence, so the caller can grade priority
+    from its own modal keyword ("should be conducted during ...")."""
+    out = []
+    for rid, info in reqs.items():
+        for m in _OVERLAP.finditer(info["text"]):
+            mode = "contains" if m.group(1) else "overlaps"
+            out.append((rid, m.group(2).upper(), mode, _sentence(info["text"], m.start())))
+    return out
 
 
 def parse_resource(text: str) -> str | None:
@@ -317,5 +416,6 @@ def derive_dates(blocks: list[dict], reqs: dict, id_set: set):
             "type": "time_window", "activity": norm_id(rid),
             "latest_end": {"day": day, "time": "17:00"},
             "enabled": True, "label": f"{rid} due by {iso}", "source": src.strip()[:200],
+            "req_id": rid,  # raw id, so the caller can attach that requirement's rationale
         })
     return start.isoformat(), span_days, cons, warnings
