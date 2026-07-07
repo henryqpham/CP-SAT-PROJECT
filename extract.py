@@ -400,6 +400,12 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     coverage["start_date"] = start_date  # derived project start (display-only; not part of the IR)
     coverage["horizon_days"] = horizon_days  # the day-count behind the minutes horizon (for the UI)
 
+    # Nothing schedulable found: instead of a silent empty plan, help the user see WHY. The most
+    # common cause is ids written "[SH 801]" (a space) that the hyphen-strict id rule can't read —
+    # surface that as a "did you mean [SH-801]?" hint the review modal can show.
+    if not reqs:
+        coverage["near_miss_ids"] = det.find_near_miss_ids(blocks)
+
     # A one-line, human-facing summary so the deterministic-first share is visible in the
     # existing "Notes from extraction" panel — no UI change needed to tell the trust story.
     warnings.insert(0, (

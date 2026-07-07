@@ -112,6 +112,14 @@ function prettify(id) {
   return out || sourceId(id);
 }
 
+// The display name for an activity: the imported label when one exists (a spec doc's
+// ids are opaque, like "ar_200" — its label is "Recovery Beacon Test"), else the
+// prettified id. Use this at every display site; prettify(id) is only the fallback.
+function displayName(id) {
+  const a = findActivity(id);
+  return a && a.label ? a.label : prettify(id);
+}
+
 // The bar's icon for its kind (from library.json), used when a bar is too narrow for text.
 const iconFor = (item) => (KINDS[kindOf(item)] || {}).icon || "";
 
@@ -813,8 +821,28 @@ function closeExtractModal() {
 // Load the reviewed scenario into a fresh plan tab (same path as importPlan). Kept separate so the
 // import always opens a NEW tab and never clobbers the plan the user is on.
 function confirmExtractLoad() {
-  const sc = pendingExtract && pendingExtract.scenario;
-  if (!sc) { closeExtractModal(); return; }
+  let sc = pendingExtract && pendingExtract.scenario;
+  // Nothing was extracted -> nothing to load (the button is disabled, but guard other paths too).
+  if (!sc || !Array.isArray(sc.activities) || !sc.activities.length) { closeExtractModal(); return; }
+  sc = clone(sc);
+
+  // Apply the load options (see renderExtractReview): the chosen window length, and
+  // the optional day-hours rule — a normal constraint the user can edit or disable.
+  const days = parseInt($("extract-horizon-days") && $("extract-horizon-days").value, 10);
+  if (Number.isFinite(days) && days >= 1) sc.horizon = days * DAY;
+  const dayChk = $("extract-dayhours");
+  if (dayChk && dayChk.checked) {
+    const used = new Set(sc.constraints.map((c) => c.id));
+    let n = 1;
+    while (used.has(`c${n}`)) n++;
+    sc.constraints.push({
+      id: `c${n}`, type: "working_window", section: "all",
+      open: "08:00", close: "20:00", days: "all", enabled: true,
+      priority: 3, label: "Day hours (added at import)", source: "",
+      rationale: "Added at import so work lands in day hours — edit or disable freely.",
+    });
+  }
+
   saveTabs();
   tabs.push({ name: "Imported doc", scenario: clone(sc) });
   activeTab = tabs.length - 1;
@@ -832,6 +860,49 @@ function confirmExtractLoad() {
 
 // Build the read-only review: a coverage summary, extraction notes, then the activity + constraint
 // tables. Everything is set via textContent (makeEl), so raw document text can never inject markup.
+// The "bad doc" state: a valid .docx the extractor found nothing schedulable in. Rather than a
+// blank, loadable plan, tell the user what happened and what to do next (the app already knows —
+// coverage carries a near-miss id hint when the cause is a wrong id separator like "[SH 801]").
+function renderExtractEmpty(body, coverage, warnings) {
+  const box = makeEl("div", "", "extract-empty");
+  box.append(makeEl("div", "📄  Nothing to schedule was found in this document.", "extract-empty-title"));
+  box.append(makeEl("p",
+    "This tool reads requirements written like [REQ-123] with an estimated duration, " +
+    "or a day-by-day schedule table. It didn’t find either one here.",
+    "extract-empty-body"));
+
+  // The likely cause, when we can name it: bracketed tags with the wrong separator.
+  const nm = coverage.near_miss_ids;
+  if (nm && nm.count) {
+    const hint = makeEl("div", "", "extract-flags");
+    const f = makeEl("div", "", "extract-flag");
+    const plural = nm.count === 1 ? "" : "s";
+    f.append(makeEl("span", `Found ${nm.count} tag${plural} like `));
+    f.append(makeEl("code", nm.example_found));
+    f.append(makeEl("span", " — did you mean "));
+    f.append(makeEl("code", nm.example_fixed));
+    f.append(makeEl("span", "? I only read requirement ids joined by a hyphen. "
+      + "Replace the space with a hyphen and re-import."));
+    hint.append(f);
+    box.append(hint);
+  }
+
+  box.append(makeEl("p",
+    "You can still ask this document questions with 💬 Ask the doc, or close this and build a plan by hand.",
+    "extract-empty-body"));
+  body.append(box);
+
+  // Keep the raw extraction notes available for anyone who wants the detail.
+  if (warnings.length) {
+    const d = makeEl("details", "", "extract-notes");
+    d.append(makeEl("summary", `Notes from extraction (${warnings.length})`));
+    const ul = makeEl("ul", "", "extract-notes-list");
+    for (const w of warnings) ul.append(makeEl("li", w));
+    d.append(ul);
+    body.append(d);
+  }
+}
+
 function renderExtractReview(result) {
   const scenario = result.scenario || { activities: [], constraints: [] };
   const coverage = result.coverage || {};
@@ -839,6 +910,20 @@ function renderExtractReview(result) {
   const ext = coverage.extraction || {};
   const body = $("extract-body");
   body.innerHTML = "";
+  const nA = scenario.activities.length;
+
+  // Nothing schedulable was found — don't offer to load an empty plan. Say what happened,
+  // hint the likely cause (id format), and point to what still works. This is the "bad doc"
+  // gate: a valid .docx that carries no requirements/schedule the extractor can read.
+  if (nA === 0) {
+    renderExtractEmpty(body, coverage, warnings);
+    $("extract-foot-note").textContent = "Nothing was loaded — your current plan is untouched.";
+    const load = $("extract-load");
+    load.textContent = "Nothing to load";
+    load.disabled = true;
+    return;
+  }
+  $("extract-load").disabled = false;  // re-enable if a previous import was empty
 
   // Summary chips: the trust headline (how much was read by rules, not guessed).
   const summary = makeEl("div", "", "extract-summary");
@@ -848,7 +933,6 @@ function renderExtractReview(result) {
     c.append(makeEl("span", label, "extract-chip-lbl"));
     return c;
   };
-  const nA = scenario.activities.length;
   summary.append(chip(nA, "activities"));
   summary.append(chip(scenario.constraints.length, "constraints"));
   if (ext.by_method && ext.by_method.deterministic != null)
@@ -920,6 +1004,42 @@ function renderExtractReview(result) {
     d.append(ul);
     body.append(d);
   }
+
+  // Load options: the two knobs that decide whether the first minute after loading
+  // is usable — how long the window is, and whether work stays inside day hours.
+  const optsBox = makeEl("div", "", "extract-options");
+  optsBox.append(makeEl("span", "Load options:", "extract-options-label"));
+
+  const daysWrap = makeEl("label", "", "extract-option");
+  daysWrap.append(makeEl("span", "Plan over "));
+  const daysIn = document.createElement("input");
+  daysIn.type = "number";
+  daysIn.id = "extract-horizon-days";
+  daysIn.min = "1";
+  daysIn.max = "365";
+  daysIn.value = String(coverage.horizon_days || Math.max(1, Math.ceil((scenario.horizon || DAY) / DAY)));
+  daysWrap.append(daysIn);
+  daysWrap.append(makeEl("span", " days"));
+  optsBox.append(daysWrap);
+  // deadlines are day-anchored — shrinking the window below the last one un-binds it
+  const lastDeadline = Math.max(-1, ...scenario.constraints
+    .filter((c) => c.type === "time_window" && c.day != null).map((c) => c.day));
+  if (lastDeadline >= 0)
+    optsBox.append(makeEl("span", `(latest deadline: day ${lastDeadline + 1})`, "extract-option-hint"));
+
+  // A spec doc states order, not clock time — without this the solver happily works
+  // the crew at 03:00. Schedule docs carry their own rhythm rules, so no checkbox there.
+  if (coverage.genre !== "schedule") {
+    const dayWrap = makeEl("label", "", "extract-option");
+    const dayChk = document.createElement("input");
+    dayChk.type = "checkbox";
+    dayChk.id = "extract-dayhours";
+    dayChk.checked = true;
+    dayWrap.append(dayChk);
+    dayWrap.append(makeEl("span", " keep work inside 08:00–20:00 (adds an editable day-hours rule)"));
+    optsBox.append(dayWrap);
+  }
+  body.append(optsBox);
 
   body.append(makeEl("h3", `Activities (${nA})`, "extract-section-title"));
   body.append(extractActivitiesTable(scenario.activities));
@@ -1444,7 +1564,7 @@ function renderRoster() {
       const sw = makeEl("span", "", "roster-swatch");
       sw.style.background = colorFor(a.id);
       row.append(sw);
-      const nameEl = makeEl("span", prettify(a.id), "roster-name"); // match the timeline's labels
+      const nameEl = makeEl("span", displayName(a.id), "roster-name"); // match the timeline's labels
       nameEl.title = a.id; // keep the exact id available on hover
       row.append(nameEl);
       row.append(makeEl("span", a.section || "Ungrouped", "roster-section"));
@@ -2540,6 +2660,18 @@ function renderResult(result) {
     if (result.schedule && result.schedule.length) {
       lastFeasibleSchedule = result.schedule;
       renderHealth(status, result.schedule, false);
+      // Auto-fit: a 2-day mission on a 39-day horizon draws as unreadable slivers.
+      // If the work uses under a quarter of the axis and the user hasn't zoomed,
+      // zoom in so the bars are legible (Fit still resets to 1).
+      if (zoomX === 1) {
+        const lo = Math.min(...result.schedule.map((s) => s.start));
+        const hi = Math.max(...result.schedule.map((s) => s.end));
+        const span = Math.max(1, hi - lo);
+        if (span / solvedHorizon < 0.25) {
+          zoomX = Math.min(12, Math.max(1, Math.round((solvedHorizon / span) * 0.8 * 2) / 2));
+          $("zoom-x").value = String(Math.min(12, zoomX));
+        }
+      }
       drawTimeline(result.schedule, false);
     } else {
       banner.hidden = false;
@@ -2903,7 +3035,7 @@ function showGanttTip(bar, e) {
   const sec = (a && a.section && a.section.trim()) || "—";
   const who = a && a.assignee && a.assignee.trim();
   ganttTip.innerHTML = "";
-  ganttTip.append(makeEl("div", prettify(id), "tip-name"));
+  ganttTip.append(makeEl("div", displayName(id), "tip-name"));
   ganttTip.append(makeEl("div", timeLabel(+bar.dataset.start) + "–" + timeLabel(+bar.dataset.end), "tip-time"));
   ganttTip.append(makeEl("div", who ? who + " · " + sec : sec, "tip-where"));
   ganttTip.append(makeEl("div", id, "tip-id"));
@@ -3091,7 +3223,10 @@ function renderHealth(status, schedule, stale) {
       strip.append(group);
     }
   } else {
-    strip.append(makeEl("span", "no activities yet", "health-note"));
+    strip.append(makeEl("span",
+      scenario.activities.length
+        ? "no feasible schedule yet — try “Which rules conflict?”"
+        : "no activities yet", "health-note"));
   }
 }
 
@@ -3390,9 +3525,9 @@ function activityBar(item, pct) {
   bar.style.left = pct(item.start) + "%";
   bar.style.width = Math.max(0.8, pct(item.end) - pct(item.start)) + "%";
   bar.style.background = barColor(item);
-  bar.setAttribute("aria-label", `${prettify(item.id)} ${timeLabel(item.start)}–${timeLabel(item.end)}`);
+  bar.setAttribute("aria-label", `${displayName(item.id)} ${timeLabel(item.start)}–${timeLabel(item.end)}`);
   bar.append(makeEl("span", iconFor(item), "bar-icon"));
-  bar.append(makeEl("span", prettify(item.id), "bar-name"));
+  bar.append(makeEl("span", displayName(item.id), "bar-name"));
   onActivate(bar, () => {
     selectedId = sourceId(item.id);
     drawTimeline(shownSchedule, shownStale);

@@ -1,60 +1,91 @@
-# HANDOFF — state as of 2026-07-06
+# HANDOFF — 2026-07-06
 
-The six-track build (test suite, two-genre .docx extractor, fill mode, Ask-the-doc,
-assistant) is COMMITTED as `4756c95`, reviewed by a multi-agent QA pass with every
-confirmed finding fixed and regression-tested. Suite: `python run_tests.py` →
-188 backend + 6 jsdom UI tests, all green.
+## The owner's direction (read this first)
 
-## The current uncommitted diff (UI polish + cleanup, 2026-07-06)
+Verbatim, after importing a test doc: *"the key thing I really want from this app is the
+functionality, and simplicity — right now it's infeasible and I don't know what to do."*
 
-UI/UX pass over the new surfaces only (research-driven; before/after screenshots
-verified). No solver/IR/backend changes.
+That sentence is the whole roadmap. The engine is correct and tested; the gap is that when a
+plan doesn't fit, the app hands the user mechanisms (explain / relax / inspector / priorities)
+instead of walking them to the fix. Judge every next change against: **would a mission manager
+know what to do next without a guide?**
 
-- **Review modal (was broken):** the flex body squashed the tables — the artemis
-  activities table showed 0 of 17 rows and nothing scrolled. Fixed (`flex-shrink: 0`
-  + per-table scroll with sticky headers). Confirm button now states what it commits
-  ("Load 17 activities + 76 constraints"); self-check flags are clickable "— show me"
-  jumps to the offending row; initial focus goes to the title, not the confirm button.
-- **Fill preview reads as a mode:** accent-blue bordered FILL PREVIEW capsule (no
-  longer FEASIBLE-green), "unsectioned" instead of "(no section)", ⚠ on "didn't fit",
-  × dismiss that returns to the live solve.
-- **Chat panels:** real **bold** rendering + clickable [n] citation chips that flash
-  their source line; sources collapse behind "Sources (n)"; error bubbles say
-  "⚠ Error —" with a ↻ Retry button; animated dots + elapsed seconds while the local
-  model works; Send disabled while pending; capability intro + example-prompt chips
-  on first open; "local model · ~10–30 s" hint; visible ↶ Undo button on assistant
-  changes cards.
-- **A11y:** focus trap + focus return on the three new modals, `aria-labelledby`,
-  `role="log"` chat logs, `role="status"` health strip, keyboard-scrollable labeled
-  table regions.
-- **Cleanup:** deleted three unreferenced root leftovers (`artemislogo2.png`,
-  `thumb-1920-1408041.jpg`, `grocery-store-library.json` — all recoverable from git
-  history); .gitignore now covers `graphify-out/` (generated; rebuild with
-  `graphify update .`), `.pytest_cache/`, `node_modules/`, and explicitly un-ignores
-  the four tracked docs. Code sweep found zero TODO/FIXME/console.log markers and
-  zero unused imports — no comment surgery was needed.
+## Repo state
 
-## Known gaps / candid notes (pre-existing or by design)
+- Committed `4756c95`: the six-track build — permanent test suite, two-genre .docx extractor
+  (spec + schedule, genre auto-detect, doc self-check), fill mode (`/fill`), Ask-the-doc RAG
+  (`/doc_chat`), plan assistant (`/assist`), all QA-reviewed with fixes regression-tested.
+- UNCOMMITTED (this diff): UI/UX polish of those surfaces (research-driven; review-modal scroll
+  bug fix, fill-preview capsule, chat citations/retry/suggestions, a11y), repo cleanup
+  (3 unreferenced files deleted, .gitignore organized), and the **"first 60 seconds after
+  import" package** — imported labels shown instead of ids, "Plan over N days" + day-hours
+  checkbox in the review modal, auto-fit zoom, honest empty-health copy.
+- Verify everything: `python run_tests.py` → 188 backend + 6 jsdom UI tests, green.
+  After code edits run `graphify update .` (see CLAUDE.md).
 
-- `time_window` / `conditional` match a bare activity id only — on a `recurs_daily`
-  activity they silently don't bind (documented IR semantics; a warning surface would help).
-- `solve()` labels a FEASIBLE (time-limited) result "OPTIMAL"; `solve_fill()` reports
-  the true status. The live `/solve` has no time limit; `/fill` is capped at 10s.
-- The artemis test doc contradicts itself (day-2 sleep vs day-3 post-sleep by 10 min);
-  the extractor's self-check catches exactly that and the oracle test pins it. If the
-  doc is regenerated consistent, update `tests/test_extract_sched.py` to expect 0 violations.
-- The sample spec's "planted VR-1012 deadline infeasibility" never binds (153-day
-  derived runway) — only the VR-512 self-loop does; tests pin reality.
-- The assistant's plan summary gives the model id/type/label per constraint, not full
-  fields — a small local model sometimes guesses at details.
+## TOP PRIORITY next build: the infeasibility TRIAGE view
+
+Today's session is the spec. The owner imported a synthetic Artemis II doc with 4 independent
+problems; the app surfaced them one at a time, worst experience first:
+- "Which rules conflict?" named ONE rule (an impossible 3h-inside-1h overlap).
+- Auto-relax stopped cold on an all-P1 conflict (`AR-235 total ≤ 720 min`) with advice
+  ("lower priority / turn off") that was WRONG for the real cause — the extractor had misread
+  the activity's duration (12h cap read as duration), so the fix was editing one number.
+- The P1↔P1 dependency loop needed Manage-constraints archaeology to find and disable.
+
+Build instead: when a solve is INFEASIBLE, gather ALL problems and present a fix-it list.
+- Backend: a `/triage` endpoint. Loop: explain → record the minimal conflict → temporarily
+  disable its most-droppable member (like relax_by_priority, but keep going past hard
+  conflicts by disabling one member to reveal the next problem) → repeat until feasible.
+  Return every conflict found, tagged: `data` (a section_budget whose section's FIXED
+  durations already exceed the cap — computable directly), `soft` (has a priority>1 member),
+  `hard` (all P1). O(n²) solves — on-demand only, like /explain.
+- UI: replace the two banner buttons' flow with a triage panel (reuse .explain-row styles):
+  one row per problem with the RIGHT action each — `data` → "Edit ar_235 (12h exceeds its own
+  12h cap)" opening the inspector; `soft` → "Relax (drops this ≤P3 rule)"; `hard` → show both
+  rules + sources, "Disable this one / that one". Progress feel: "Problem 2 of 4".
+- Cheap companion: an "Ask the assistant why" button on the INFEASIBLE banner — assistant.py
+  already has the explain_infeasible tool and speaks plainly.
+
+## Second quick win: stop the duration misreads at the source
+
+Bitten twice in demos (GBORD, then AR-235). In `extract_det.py`, `_DURATION` reads
+"N hours/days/weeks" anywhere in the body, so it grabs caps ("shall not exceed 10 hours") and
+cadences ("every 7 days"), and can't read "30 minutes" at all. Fix: add `minute|min` to the
+unit list, prefer a match after "Estimated duration:" when present, and skip matches preceded
+by "not exceed / no more than / every / within". Add regression tests (the misread cases are
+described in tests + this file). This alone removes the nastiest triage case.
+
+## Test documents (what each one proves)
+
+- `testdata/sample_vehicle_requirements.docx` — spec genre, 29/29, planted VR-512 self-loop
+  (the VR-1012 "deadline infeasibility" never actually binds — 153-day derived runway).
+- `testdata/artemis_3day_schedule.docx` — schedule genre; deliberately contradicts itself by
+  10 min (day-2 sleep vs day-3 post-sleep); the self-check must flag exactly 2 violations.
+- The owner's ChatGPT "Artemis II — Mission Operations Requirements" doc (not in testdata yet;
+  worth committing): 23 reqs, exercises everything, and carries 4 real traps — AR-235's
+  "30 minutes" → misread as 12h (busts its own budget), AR-345 typo (not-extracted tripwire),
+  two impossible "during" rules (3h-in-1h, 4h-in-2h, P3), and a planted P1↔P1 loop
+  (AR-310↔AR-315). Fastest manual path to green: edit ar_235 duration → 30; auto-relax
+  (drops the two P3 overlaps); disable one loop leg; OPTIMAL.
+
+## Known gaps (pre-existing, documented)
+
+- `time_window`/`conditional` silently don't bind on a `recurs_daily` activity (bare-id match).
+- `solve()` labels a time-limited FEASIBLE as "OPTIMAL"; live `/solve` has no time limit
+  (`/fill` is capped at 10s).
+- A spec doc's derived horizon can be ~5 weeks for ~2 days of work (30-day deadline lead in
+  `derive_dates`) — the "Plan over N days" load option covers it, but triage should EXPLAIN it.
+- The assistant's plan summary gives id/type/label per constraint, not full fields.
 
 ## Quick browser pass (~3 min)
 
-`flask --app app run --debug`, hard-refresh (stale-cache trap), then:
-1. Import `testdata/artemis_3day_schedule.docx` → review modal scrolls, tables full,
-   amber self-check flags jump to rows, "Load 17 activities + 76 constraints" → OPTIMAL timeline.
-2. ⤒ Fill window on the lake example → blue FILL PREVIEW capsule in the health bar;
-   × returns to live view.
-3. 💬 Ask the doc → suggestion chips work; an answer shows bold text + clickable [n]
-   cites + collapsed Sources. Kill Ollama → ⚠ error bubble with Retry, app fine.
-4. 🤖 Assistant → "add a 30 minute swim" → changes card with ↶ Undo button; Undo restores.
+`flask --app app run --debug`, hard-refresh (stale-cache trap):
+1. Import the artemis schedule doc → review modal scrolls, amber self-check flags jump to
+   rows, confirm button states counts → loads OPTIMAL, labeled, day-rhythm timeline.
+2. Import a spec doc → Load options row (days + day-hours checkbox) → loads with real names,
+   work inside 08:00–20:00, auto-fitted.
+3. ⤒ Fill window on the lake example → blue FILL PREVIEW capsule, × returns to live.
+4. 💬 Ask the doc → suggestion chips, cited answer, collapsed Sources; kill Ollama → ⚠ error
+   bubble with Retry, app fine.
+5. 🤖 Assistant → "add a 30 minute swim" → changes card with ↶ Undo; Ctrl+Z restores.

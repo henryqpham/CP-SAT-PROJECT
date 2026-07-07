@@ -850,6 +850,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
   background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn);
   border-radius: var(--radius-sm); padding: 0.45rem 0.7rem; font-size: 0.85rem;
 }
+/* the "bad doc" empty state: valid .docx, nothing schedulable found */
+.extract-empty { display: flex; flex-direction: column; gap: 0.6rem; padding: 0.3rem 0; }
+.extract-empty-title { font-weight: 700; color: var(--ink); font-size: 1.02rem; }
+.extract-empty-body { color: var(--muted); font-size: 0.9rem; line-height: 1.5; margin: 0; }
+.extract-empty code {
+  font-family: var(--font-mono); font-size: 0.85em; color: var(--ink);
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 4px; padding: 0.05rem 0.3rem;
+}
+/* the Load button when an import found nothing to load (disabled, not busy) */
+#extract-load:disabled { cursor: not-allowed; }
+
 /* a flag that jumps to the row it's about (self-check findings) */
 button.extract-flag { text-align: left; cursor: pointer; font: inherit; width: 100%; }
 button.extract-flag:hover { border-color: var(--warn); background: rgba(245, 177, 61, 0.22); }
@@ -861,6 +873,20 @@ button.extract-flag:hover { border-color: var(--warn); background: rgba(245, 177
 .extract-notes { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.7rem; }
 .extract-notes summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
 .extract-notes-list { margin: 0.5rem 0 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.82rem; }
+
+/* load options: the horizon-days input + the day-hours checkbox, one quiet row */
+.extract-options {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.9rem;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0.5rem 0.7rem; font-size: 0.85rem;
+}
+.extract-options-label { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.extract-option { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--ink); }
+.extract-option input[type="number"] {
+  width: 4.2rem; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--ink); padding: 0.2rem 0.4rem; font: inherit;
+}
+.extract-option-hint { color: var(--faint); font-size: 0.76rem; }
 
 .extract-section-title { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; }
 
@@ -1209,8 +1235,9 @@ input[type="range"]::-moz-range-thumb {
 .roster-row.selected::before { background: var(--accent); transform: scaleY(1); opacity: 1; }
 .roster-row.selected:hover { filter: brightness(1.06); }
 .roster-swatch { width: 0.7rem; height: 0.7rem; border-radius: 3px; flex: 0 0 auto; }
-.roster-name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.roster-section { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+.roster-name { flex: 1; font-weight: 600; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* long imported section names (flight_ops_team) must not squeeze the NAME to nothing */
+.roster-section { color: var(--muted); font-size: 0.75rem; white-space: nowrap; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; }
 .roster-time { color: var(--muted); font-size: 0.75rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .roster-del { font-size: 1.05rem; } /* .del already handles color/hover; this just trims it down */
 

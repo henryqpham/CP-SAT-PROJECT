@@ -26,9 +26,47 @@ import re
 _REQ_ID = re.compile(r"\[([A-Z]{2,}-\d+)\]")
 _REQ_DEF = re.compile(r"^\s*\[([A-Z]{2,}-\d+)\]\s+(\S.*)$")
 
-# Effort/duration in prose: "3 days", "24 hours", "1 week". Convert to minutes.
-_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*(hour|hr|day|week|month)s?\b", re.I)
-_UNIT_MIN = {"hour": 60, "hr": 60, "day": 1440, "week": 10080, "month": 43200}
+# A bracketed tag that LOOKS like a requirement id but joins the letters and number with the
+# WRONG separator — a space, dot, underscore, or en/em dash — or nothing at all. The hyphen-strict
+# _REQ_ID above can't read these, so a doc full of "[SH 801]" extracts to nothing. This is used
+# ONLY to hint "did you mean [SH-801]?" when nothing was extracted; a near-miss is never treated
+# as a real id (the hyphen is the contract). The class excludes "-", so a correct "[SH-801]" here
+# is not a near-miss.
+_NEAR_MISS_ID = re.compile(r"\[([A-Z]{2,})[ ._–—]*(\d+)\]")
+
+# Effort/duration in prose: "3 days", "24 hours", "90 minutes", "1.5 hours", "1 hour 30 minutes".
+# Minutes are read too — before, only hour/day/week/month matched, so a "30 minute" task fell
+# through to an 8-hour default (the bug that misread SH-804/AR-235 in demos). Convert to minutes.
+_DURATION = re.compile(r"(\d+(?:\.\d+)?)\s*(hour|hr|day|week|month|minute|min)s?\b", re.I)
+_UNIT_MIN = {"hour": 60, "hr": 60, "day": 1440, "week": 10080, "month": 43200,
+             "minute": 1, "min": 1}
+
+# The deliberate scheduling signal: a value written right after an "...effort:" / "...duration:"
+# label ("Estimated duration: 30 minutes"). The separator may be a colon, hyphen, or en/em dash
+# (this module already reads –/— in _WINDOW). Preferred over any other number in the body.
+_DURATION_LABEL = re.compile(r"\b(?:effort|duration)\b\s*[:\-–—]?\s*", re.I)
+
+# A number+unit can be a CAP or a CADENCE, not an effort estimate — such a value must never be read
+# as the activity's own duration (see parse_duration). Two shapes, so a far-away positional word
+# can't veto a real value while an interposed cap phrase still can:
+#   _CAP_STRONG     — unambiguous cap words, matched ANYWHERE in the clause before the number
+#                     ("Maximum duration: 10 hours", "shall not exceed a total of 10 hours").
+#                     Kept in step with _BUDGET's cap vocabulary ("capped at" / "limited to").
+#   _CAP_POSITIONAL — lead-ins that bind to the very next number, matched only at the clause end
+#                     ("every 7 days", "within 2 hours", "up to 4 hours").
+#   _CADENCE_TRAIL  — a rate marker AFTER the number ("3 days per week", "2 hours/week").
+_CAP_STRONG = re.compile(
+    r"\b(?:not\s+(?:to\s+)?exceed|no\s+more\s+than|no\s+longer\s+than|not\s+longer\s+than|"
+    r"no\s+less\s+than|less\s+than|maximum(?:\s+of)?|minimum(?:\s+of)?|capped\s+at|"
+    r"limited\s+to|limit|cap|ceiling)\b", re.I)
+_CAP_POSITIONAL = re.compile(r"\b(?:every|within|per|up\s+to|at\s+most|at\s+least)\s*$", re.I)
+_CADENCE_TRAIL = re.compile(
+    r"^\s*(?:per\s+(?:day|week|month|year|shift|hour|cycle)|times?\s+per|/\s*(?:day|week|month))\b",
+    re.I)
+# A trailing "<n> <smaller-unit>" that CONTINUES a compound duration ("1 hour 30 minutes" -> 90),
+# optionally joined by "and" or a comma.
+_DURATION_TAIL = re.compile(
+    r"\s*(?:,\s*|and\s+)?(\d+(?:\.\d+)?)\s*(hour|hr|day|week|month|minute|min)s?\b", re.I)
 
 # Dependency phrasings — a NARROW allowlist (hardened in the adversarial pass). Group 1
 # is the high-precision forms; group 2 is a bare "after [ID]" but NOT when [ID] is the
@@ -121,6 +159,31 @@ def find_req_ids(text: str) -> list[str]:
     return _REQ_ID.findall(text)
 
 
+def find_near_miss_ids(blocks: list[dict]) -> dict | None:
+    """When nothing was extracted, look for bracketed tags that resemble requirement ids but
+    use the wrong separator ("[SH 801]", "[SH_801]", "[SH801]") so the hyphen-strict rule missed
+    them. Returns {"count", "example_found", "example_fixed", "samples"} to power a "did you mean
+    [SH-801]?" hint, or None if there are none. Detection only — never turned into a real id.
+    """
+    found = []      # (raw_tag, fixed_tag) in first-seen order
+    seen = set()
+    for b in blocks:
+        for m in _NEAR_MISS_ID.finditer(b["text"]):
+            raw = m.group(0)
+            if raw in seen:
+                continue
+            seen.add(raw)
+            found.append((raw, f"[{m.group(1)}-{m.group(2)}]"))
+    if not found:
+        return None
+    return {
+        "count": len(found),
+        "example_found": found[0][0],
+        "example_fixed": found[0][1],
+        "samples": [raw for raw, _ in found[:6]],
+    }
+
+
 def parse_dates(text: str) -> list[str]:
     """All dates in `text`, as ISO 'YYYY-MM-DD' (calendar-validated). Empty if none."""
     out = []
@@ -143,12 +206,57 @@ def parse_dates(text: str) -> list[str]:
     return out
 
 
+def _units_to_min(value: str, unit: str) -> int:
+    """('1.5', 'hour') -> 90. The one place number+unit becomes minutes."""
+    return int(round(float(value) * _UNIT_MIN[unit.lower()]))
+
+
+def _clause_before(text: str, at: int) -> str:
+    """The text from the previous sentence break (. ; newline) up to `at`, so a cap phrase in an
+    EARLIER sentence can't veto a duration stated in this one."""
+    lo = max(text.rfind(".", 0, at), text.rfind(";", 0, at), text.rfind("\n", 0, at)) + 1
+    return text[lo:at]
+
+
+def _is_cap_or_cadence(text: str, m: "re.Match") -> bool:
+    """True when the number+unit at `m` is really a cap or a cadence, not an effort estimate."""
+    clause = _clause_before(text, m.start())
+    if _CAP_STRONG.search(clause) or _CAP_POSITIONAL.search(clause):
+        return True
+    return bool(_CADENCE_TRAIL.match(text[m.end():m.end() + 16]))
+
+
+def _duration_minutes(text: str, m: "re.Match") -> int:
+    """Minutes for match `m`, folding in a compound tail ("1 hour 30 minutes" -> 90). Only a
+    strictly smaller unit continues the sum, so "2 hours 3 days" is not folded together."""
+    total = _units_to_min(m[1], m[2])
+    prev = _UNIT_MIN[m[2].lower()]
+    pos = m.end()
+    while (t := _DURATION_TAIL.match(text, pos)) and _UNIT_MIN[t[2].lower()] < prev:
+        total += _units_to_min(t[1], t[2])
+        prev = _UNIT_MIN[t[2].lower()]
+        pos = t.end()
+    return total
+
+
 def parse_duration(text: str) -> int | None:
-    """Minutes from an explicit effort phrase ("3 days" -> 4320), or None if none stated."""
-    m = _DURATION.search(text)
-    if not m:
-        return None
-    return int(round(float(m[1]) * _UNIT_MIN[m[2].lower()]))
+    """Minutes from an explicit effort phrase ("3 days" -> 4320, "30 minutes" -> 30,
+    "1 hour 30 minutes" -> 90), or None if none is stated.
+
+    Prefers the value right after an "Estimated duration:"/"effort:" label (the deliberate signal);
+    when a block states two, the FIRST wins (consistent with the first-seen merge of duplicates).
+    A CAP or CADENCE is never read as a duration ("Maximum duration: 10 hours", "shall not exceed
+    10 hours", "3 days per week") — the guard runs on the labelled value too, not just the fallback.
+    """
+    for lab in _DURATION_LABEL.finditer(text):
+        m = _DURATION.match(text, lab.end())  # a value sitting immediately after the label
+        if m and not _is_cap_or_cadence(text, m):
+            return _duration_minutes(text, m)
+    for m in _DURATION.finditer(text):
+        if _is_cap_or_cadence(text, m):
+            continue
+        return _duration_minutes(text, m)
+    return None
 
 
 def parse_rationale(text: str) -> str:
@@ -202,8 +310,7 @@ def section_budgets(reqs: dict) -> list[tuple[str, int, str]]:
     for rid, info in reqs.items():
         m = _BUDGET.search(info["text"])
         if m:
-            minutes = int(round(float(m.group(1)) * _UNIT_MIN[m.group(2).lower()]))
-            out.append((rid, minutes, m.group(0)))
+            out.append((rid, _units_to_min(m.group(1), m.group(2)), m.group(0)))
     return out
 
 
