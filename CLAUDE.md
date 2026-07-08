@@ -18,11 +18,12 @@ architecture and data flow.
 
 ## Structure
 
-- `app.py` — Flask routes: `/` (dashboard), `/solve`, `/fill` (pack the window), `/explain`, `/relax`, `/extract` (.docx ingest, genre auto-detect), `/doc_chat`, `/assist`, `/example[/<name>]` + `/examples`. `/parse` (Ollama) is kept but dormant.
+- `app.py` — Flask routes: `/` (dashboard), `/solve`, `/fill` (pack the window), `/explain`, `/relax`, `/extract` (.docx ingest, genre auto-detect), `/deep_read` (LLM-first reader), `/doc_chat`, `/assist`, `/example[/<name>]` + `/examples`. `/parse` (Ollama) is kept but dormant.
 - `models.py` — Pydantic IR; the JSON contract shared by the dashboard and `/solve` (and dormant `/parse`)
 - `parse.py` — DORMANT: a local Ollama model turns a sentence into a validated `Scenario` (off for the MVP)
 - `solver.py` — `Scenario` -> CP-SAT: `solve()` (live), `solve_fill()` (packing, separate objective), `explain_infeasible()`, `relax_by_priority()`
 - `ingest.py` / `extract_det.py` / `extract.py` / `extract_sched.py` — the .docx pipeline (blocks -> genre dispatch -> spec rules or schedule rules)
+- `extract_llm.py` — the LLM-first reader (`/deep_read`): chunked whole-doc sweep with the local model -> reviewed proposals in the import modal (never writes into the plan directly)
 - `doc_chat.py` — Ask the doc (local RAG with cited sources); `assistant.py` — plan assistant (typed tool-calling)
 - `templates/index.html`, `static/app.js`, `static/style.css` — the vanilla-JS dashboard
 - `static/library.json` — runtime data for the activity library (types + templates); no content is hardcoded in the JS

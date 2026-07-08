@@ -80,3 +80,38 @@ test("review modal lists the extracted activities, constraints, flags and notes"
 
   assert.equal(app.errors.length, 0, `page errors: ${app.errors}`);
 });
+
+test("ambiguous cross-reference offers both directions; clicking one adds a precedence", async (t) => {
+  const withXref = structuredClone(extractResult);
+  withXref.coverage.extraction.cross_references = {
+    narrative: [],
+    ambiguous: [{ requirement: "SH-1105", references: "SH-1101",
+                  phrase: "validated against [SH-1101] readings" }],
+  };
+  const app = await loadApp({ responses: { "/extract": withXref } });
+  t.after(app.close);
+  const { window, document } = app;
+
+  await window.runExtract(new window.File(["fake docx bytes"], "mission.docx"));
+  await app.flush();
+
+  const box = document.querySelector(".extract-xrefs");
+  assert.ok(box, "unresolved cross-reference section rendered");
+  assert.match(box.textContent, /SH-1105.*mentions.*SH-1101/);
+
+  const buttons = [...box.querySelectorAll(".extract-xref-add")];
+  assert.equal(buttons.length, 2, "both directions offered");
+
+  const before = app.run("pendingExtract.scenario.constraints.length");
+  buttons[0].click(); // "SH-1101 → SH-1105": referenced id first
+  assert.equal(app.run("pendingExtract.scenario.constraints.length"), before + 1);
+  const added = app.run("pendingExtract.scenario.constraints.at(-1)");
+  assert.equal(added.type, "precedence");
+  assert.equal(added.before, "sh_1101");
+  assert.equal(added.after, "sh_1105");
+  assert.equal(added.source, "validated against [SH-1101] readings");
+  assert.ok(buttons.every((b) => b.disabled), "row locks after one direction is chosen");
+  assert.match(box.textContent, /✓ added/);
+
+  assert.equal(app.errors.length, 0, `page errors: ${app.errors}`);
+});

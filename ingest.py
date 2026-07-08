@@ -103,7 +103,15 @@ def _heading_level(paragraph):
         return outline + 1  # outline levels are 0-based
 
     # (c) Short, bold, Title-ish line with no requirement id (e.g. the doc title).
-    if _is_bold(paragraph) and len(text) < 80 and not _REQ_HEADER.search(text):
+    # Must contain at least one letter or digit: docs fake horizontal rules with
+    # bold "-----" paragraphs, and a punctuation-only "heading" would wipe the
+    # breadcrumb and show up as a literal divider in the review table.
+    if (
+        _is_bold(paragraph)
+        and len(text) < 80
+        and not _REQ_HEADER.search(text)
+        and re.search(r"[A-Za-z0-9]", text)
+    ):
         return 1
 
     return None

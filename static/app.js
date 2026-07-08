@@ -100,6 +100,14 @@ function laneOf(item, mode) {
   return sec || "Shared";
 }
 
+// Human name for a section-mode lane: the doc's glossary label when the import found one
+// ("srme" -> "Synthetic Resource Modeling Engine"), else the lane key itself.
+function laneDisplay(lane) {
+  if (groupMode === "section" && scenario.section_labels && scenario.section_labels[lane])
+    return scenario.section_labels[lane];
+  return lane;
+}
+
 const titleCase = (s) => (s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s);
 
 // prettify(id) -> a clean human label: drop the #dN occurrence, drop the crew letter (shown by the
@@ -826,6 +834,29 @@ function confirmExtractLoad() {
   if (!sc || !Array.isArray(sc.activities) || !sc.activities.length) { closeExtractModal(); return; }
   sc = clone(sc);
 
+  // Merge the deep-read proposals the reviewer left CHECKED (see renderDeepProposals).
+  const deep = pendingExtract.deep;
+  if (deep) {
+    const checkedIdx = (kind) =>
+      [...document.querySelectorAll(`#extract-deep input[data-kind="${kind}"]:checked`)]
+        .map((cb) => Number(cb.dataset.idx));
+    const ids = new Set(sc.activities.map((a) => a.id));
+    for (const i of checkedIdx("activity")) {
+      const a = { ...deep.activities[i] };
+      delete a._guessed_duration; // UI hint, not an IR field
+      if (a.id && !ids.has(a.id)) { sc.activities.push(a); ids.add(a.id); }
+    }
+    for (const i of checkedIdx("constraint")) sc.constraints.push({ ...deep.constraints[i] });
+  }
+  // Review-added rules (cross-ref picks, deep-read accepts) arrive without ids — fill
+  // them here so the constraints modal's toggles address the right rows.
+  const usedIds = new Set(sc.constraints.map((c) => c.id).filter(Boolean));
+  let nextId = 1;
+  for (const c of sc.constraints) {
+    if (!c.id) { while (usedIds.has(`c${nextId}`)) nextId++; c.id = `c${nextId}`; usedIds.add(c.id); }
+    if (c.enabled === undefined) c.enabled = true;
+  }
+
   // Apply the load options (see renderExtractReview): the chosen window length, and
   // the optional day-hours rule — a normal constraint the user can edit or disable.
   const days = parseInt($("extract-horizon-days") && $("extract-horizon-days").value, 10);
@@ -856,6 +887,62 @@ function confirmExtractLoad() {
   render();
   closeExtractModal();
   flash(`Loaded ${sc.activities.length} activities from the document`);
+}
+
+// The deep-read proposals: what the local model found that the rules didn't. Every item is a
+// labeled checkbox (checked = merged at Load) with its evidence quote; "couldn't model" items
+// are listed read-only so nothing the model reported disappears silently.
+function renderDeepProposals(box, deep) {
+  const nA = (deep.activities || []).length;
+  const nC = (deep.constraints || []).length;
+  box.append(makeEl("div",
+    `🧠 Deep read (${deep.calls || 0} model call(s)): ${nC} rule(s) and ${nA} new activit${nA === 1 ? "y" : "ies"} proposed — check what to load`,
+    "extract-deep-head"));
+
+  const item = (kind, idx, text, evidence, checked) => {
+    const li = makeEl("li", "", "extract-deep-item");
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = checked;
+    cb.dataset.kind = kind;
+    cb.dataset.idx = String(idx);
+    lab.append(cb);
+    lab.append(makeEl("span", " " + text));
+    li.append(lab);
+    if (evidence) li.append(makeEl("div", `“${evidence}”`, "extract-deep-quote"));
+    return li;
+  };
+
+  if (nC) {
+    const ul = makeEl("ul", "", "extract-notes-list");
+    (deep.constraints || []).forEach((c, i) =>
+      ul.append(item("constraint", i, c.label || constraintSummary(c), c.source, true)));
+    box.append(ul);
+  }
+  if (nA) {
+    box.append(makeEl("div", "New activities the rules didn't extract:", "extract-deep-sub"));
+    const ul = makeEl("ul", "", "extract-notes-list");
+    (deep.activities || []).forEach((a, i) => {
+      const dur = a._guessed_duration ? "duration unknown — 8h guessed" : fmtMinutes(a.duration);
+      ul.append(item("activity", i,
+        `${a.label} (${dur}${a.section ? `, section ${a.section}` : ""}${a.recurs_daily ? ", daily" : ""})`,
+        a.source, true));
+    });
+    box.append(ul);
+  }
+  if (!nA && !nC) box.append(makeEl("div", "The model found nothing the rules hadn't already read.", "extract-deep-sub"));
+
+  const couldnt = deep.couldnt_model || [];
+  if (couldnt.length) {
+    const d = makeEl("details", "", "extract-notes");
+    d.append(makeEl("summary", `Couldn't model (${couldnt.length}) — read, but no rule type fits yet`));
+    const ul = makeEl("ul", "", "extract-notes-list");
+    for (const u of couldnt) ul.append(makeEl("li", `“${u.phrase}” — ${u.reason}`));
+    d.append(ul);
+    box.append(d);
+  }
+  for (const e of deep.errors || []) box.append(makeEl("div", "⚠ " + e, "extract-flag"));
 }
 
 // Build the read-only review: a coverage summary, extraction notes, then the activity + constraint
@@ -955,6 +1042,8 @@ function renderExtractReview(result) {
   const flags = [];
   if (coverage.not_extracted && coverage.not_extracted.length)
     flags.push(`${coverage.not_extracted.length} requirement(s) in the doc were NOT extracted: ${coverage.not_extracted.join(", ")}`);
+  if (coverage.duplicate_ids && coverage.duplicate_ids.length)
+    flags.push(`${coverage.duplicate_ids.length} requirement id(s) are defined MORE THAN ONCE in the doc — the copies may disagree; the first definition won: ${coverage.duplicate_ids.join(", ")}`);
   if (coverage.dangling_references && coverage.dangling_references.length)
     flags.push(`${coverage.dangling_references.length} constraint(s) reference a missing activity.`);
   // Schedule genre: rule bullets we couldn't model, and self-check violations (the
@@ -993,6 +1082,91 @@ function renderExtractReview(result) {
     }
     body.append(box);
   }
+
+  // Unresolved cross-references: the rules saw "[SH-x] … [SH-y]" phrasing they could neither
+  // capture as a dependency nor dismiss as narration. NEVER auto-added (deterministic edges
+  // stay authoritative) — each row shows the doc phrase and offers BOTH directions; the human
+  // picks one, and the constraint joins the pending scenario before Load.
+  const ambiguous = ((ext.cross_references || {}).ambiguous || []);
+  if (ambiguous.length) {
+    const d = makeEl("details", "", "extract-notes extract-xrefs");
+    d.open = true;
+    d.append(makeEl("summary",
+      `Needs your review: ${ambiguous.length} possible dependenc${ambiguous.length === 1 ? "y" : "ies"} the rules couldn't confirm`));
+    const ul = makeEl("ul", "", "extract-notes-list");
+    const normId = (raw) => raw.toLowerCase().replace(/-/g, "_");
+    for (const x of ambiguous) {
+      const li = makeEl("li", "");
+      li.append(makeEl("span", `[${x.requirement}] mentions [${x.references}]: “${x.phrase}” `));
+      const addBtn = (beforeRaw, afterRaw) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "extract-xref-add";
+        b.textContent = `add: ${beforeRaw} → ${afterRaw}`;
+        b.title = `Add a precedence rule: ${beforeRaw} must finish before ${afterRaw} starts`;
+        b.onclick = () => {
+          scenario.constraints.push({
+            type: "precedence",
+            before: normId(beforeRaw),
+            after: normId(afterRaw),
+            label: `${afterRaw} after ${beforeRaw} (added in review)`,
+            source: x.phrase,
+            priority: 3,
+            rationale: "Off-format cross-reference confirmed by the reviewer at import.",
+          });
+          for (const btn of li.querySelectorAll("button")) btn.disabled = true;
+          li.append(makeEl("span", " ✓ added", "extract-xref-added"));
+        };
+        return b;
+      };
+      li.append(addBtn(x.references, x.requirement));
+      li.append(addBtn(x.requirement, x.references));
+      ul.append(li);
+    }
+    d.append(ul);
+    body.append(d);
+  }
+
+  // Deep read: the local model sweeps the WHOLE document for scheduling facts the rules
+  // can't see (relations stated by name, recurrence, tasks without ids). It returns
+  // PROPOSALS only — each one shows its evidence quote and is accepted or rejected here,
+  // before Load. Nothing the model says enters the plan unreviewed.
+  const deepBox = makeEl("div", "", "extract-deep");
+  deepBox.id = "extract-deep";
+  if (result.deep) {
+    renderDeepProposals(deepBox, result.deep);
+  } else {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "deep-read-btn";
+    btn.className = "extract-deep-btn";
+    btn.textContent = "🧠 Deep read (local model)";
+    btn.title = "Sweep the whole document with the local model for rules the deterministic pass can't read — you review every proposal before it loads.";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const t0 = Date.now();
+      const tick = setInterval(() => {
+        btn.textContent = `🧠 Reading the document… ${Math.round((Date.now() - t0) / 1000)}s`;
+      }, 1000);
+      try {
+        const resp = await post("/deep_read", { scenario: result.scenario });
+        result.deep = resp; // rides on pendingExtract; confirmExtractLoad merges the checked items
+        deepBox.innerHTML = "";
+        renderDeepProposals(deepBox, resp);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "🧠 Deep read (local model)";
+        showAlert(err.message || String(err));
+      } finally {
+        clearInterval(tick);
+      }
+    };
+    deepBox.append(btn);
+    deepBox.append(makeEl("span",
+      "Optional: the local model reads the whole document for rules the deterministic pass can't see.",
+      "extract-deep-note"));
+  }
+  body.append(deepBox);
 
   // Notes from extraction (the deterministic-first headline + every warning), collapsible.
   if (warnings.length) {
@@ -3173,11 +3347,15 @@ function renderHealth(status, schedule, stale) {
 
   if (schedule && schedule.length) {
     const caps = activityCaps();
-    const lo = Math.min(...schedule.map((s) => s.start));
     const hi = Math.max(...schedule.map((s) => s.end));
-    const span = Math.max(0, hi - lo); // wall-clock the plan occupies (correct with parallel lanes)
-    const pct = horizon > 0 ? Math.round((100 * span) / horizon) : 0;
-    const over = span > horizon;
+    // Busy time = booked minutes across every scheduled occurrence. That's the honest
+    // "used vs budget" number: the old wall-clock span (last end - first start) read ~100%
+    // on any multi-day plan with a recurring activity, and ~0% when unsectioned work ran
+    // in parallel (52h of imported work showed as "4h (2%)"). "finishes" still carries
+    // the envelope: when the plan actually wraps up.
+    const work = schedule.reduce((t, s) => t + (s.end - s.start), 0);
+    const pct = horizon > 0 ? Math.round((100 * work) / horizon) : 0;
+    const over = work > horizon;
 
     const bar = document.createElement("div");
     bar.className = "cap-bar" + (over ? " cap-over" : "");
@@ -3187,11 +3365,11 @@ function renderHealth(status, schedule, stale) {
     bar.append(fill);
     strip.append(bar);
 
-    strip.append(makeEl("span", dur(span) + " / " + dur(horizon) + " (" + pct + "%)", "health-stat"));
+    strip.append(makeEl("span", "work " + dur(work) + " / " + dur(horizon) + " (" + pct + "%)", "health-stat"));
     strip.append(
       over
-        ? makeEl("span", "OVER by " + dur(span - horizon), "health-stat health-over")
-        : makeEl("span", dur(horizon - span) + " left", "health-stat")
+        ? makeEl("span", "OVER by " + dur(work - horizon), "health-stat health-over")
+        : makeEl("span", dur(horizon - work) + " left", "health-stat")
     );
     strip.append(makeEl("span", "finishes " + timeLabel(hi), "health-stat"));
     const tight = schedule.filter((s) => isTight(s, caps)).length;
@@ -3471,7 +3649,9 @@ function laneRow(lane, items, pct) {
   label.className = "gantt-label lane-label";
   const top = makeEl("div", "", "lane-top");
   top.append(makeEl("span", isOpen ? "▾" : "▸", "sec-caret"));
-  top.append(makeEl("span", lane, "sec-name"));
+  const name = makeEl("span", laneDisplay(lane), "sec-name");
+  if (laneDisplay(lane) !== lane) name.title = lane; // hover shows the raw section id
+  top.append(name);
   top.append(makeEl("span", String(items.length), "sec-count"));
   if (tight) top.append(makeEl("span", "⚠", "sec-warn"));
   label.append(top);

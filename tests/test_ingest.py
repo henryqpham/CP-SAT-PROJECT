@@ -42,6 +42,23 @@ def test_fake_bold_short_line_is_a_heading():
     assert blocks[1]["section_path"] == ["Fake Bold Heading"]
 
 
+def test_bold_divider_line_is_not_a_heading():
+    # Docs fake horizontal rules with bold "-----" paragraphs. A punctuation-only
+    # line must not become a heading, or it wipes the breadcrumb and shows up as
+    # a literal divider in the review table (the testdoc.docx bug).
+    def fill(doc):
+        para = doc.add_paragraph()
+        para.add_run("APPENDIX E — EXPANSION SET").bold = True
+        rule = doc.add_paragraph()
+        rule.add_run("-" * 60).bold = True
+        doc.add_paragraph("[SH-1101] Modeled Synchronization Pulse")
+    blocks = blocks_of(fill)
+    assert blocks[0]["kind"] == "heading"
+    assert blocks[1]["kind"] == "text"  # the divider, demoted
+    # the requirement still sits under the appendix title, not the divider
+    assert blocks[2]["section_path"] == ["APPENDIX E — EXPANSION SET"]
+
+
 def test_numbered_paragraph_depth_builds_breadcrumb():
     def fill(doc):
         doc.add_paragraph("4 Braking")

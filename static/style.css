@@ -874,6 +874,32 @@ button.extract-flag:hover { border-color: var(--warn); background: rgba(245, 177
 .extract-notes summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
 .extract-notes-list { margin: 0.5rem 0 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.25rem; color: var(--muted); font-size: 0.82rem; }
 
+/* deep read: the local-model sweep — button, proposal checklist, evidence quotes */
+.extract-deep { display: flex; flex-direction: column; gap: 0.45rem; background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.5rem 0.7rem; }
+.extract-deep-btn {
+  font: inherit; font-size: 0.85rem; cursor: pointer; align-self: flex-start;
+  padding: 0.3rem 0.7rem; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+}
+.extract-deep-btn:hover:not(:disabled) { border-color: var(--accent); }
+.extract-deep-btn:disabled { opacity: 0.6; cursor: default; }
+.extract-deep-note, .extract-deep-sub { color: var(--muted); font-size: 0.8rem; }
+.extract-deep-head { font-size: 0.85rem; }
+.extract-deep-item label { cursor: pointer; }
+.extract-deep-quote { color: var(--muted); font-size: 0.76rem; font-style: italic; margin-left: 1.4rem; }
+
+/* unresolved cross-references: per-row "add as precedence" in either direction */
+.extract-xrefs summary { color: var(--warn); }
+.extract-xref-add {
+  font: inherit; font-size: 0.78rem; cursor: pointer; margin-left: 0.35rem;
+  padding: 0.1rem 0.45rem; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+}
+.extract-xref-add:hover:not(:disabled) { border-color: var(--accent); }
+.extract-xref-add:disabled { opacity: 0.45; cursor: default; }
+.extract-xref-added { color: var(--ok); }
+
 /* load options: the horizon-days input + the day-hours checkbox, one quiet row */
 .extract-options {
   display: flex; align-items: center; flex-wrap: wrap; gap: 0.9rem;

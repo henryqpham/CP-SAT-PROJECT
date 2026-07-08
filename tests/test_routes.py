@@ -131,3 +131,50 @@ def test_extract_corrupt_docx_400(client):
     r = client.post("/extract", data={"document": (io.BytesIO(b"not a real docx"), "x.docx")})
     assert r.status_code == 400
     assert "Couldn't read that document" in r.get_json()["error"]
+
+
+# --------------------------------------------------------------------------- #
+# /deep_read — the LLM-first reader (model stubbed; blocks come from doc_chat).
+# --------------------------------------------------------------------------- #
+def test_deep_read_without_document_400(client):
+    import doc_chat
+    doc_chat.clear()
+    r = client.post("/deep_read", json={"scenario": {"activities": [], "constraints": []}})
+    assert r.status_code == 400
+    assert "Import a document first" in r.get_json()["error"]
+
+
+def test_deep_read_returns_proposals(client, monkeypatch):
+    import doc_chat
+    import extract_llm
+    doc_chat.index_document([{"index": 0, "kind": "paragraph", "section_path": [],
+                              "text": "some doc text", "is_shall": False}], "ops.docx")
+    fake = {"activities": [], "constraints": [{"type": "precedence", "before": "a", "after": "b",
+                                               "source": "b after a", "priority": 3,
+                                               "rationale": "", "label": "b after a (deep read)"}],
+            "couldnt_model": [], "errors": [], "chunks": 1, "calls": 1}
+    monkeypatch.setattr(extract_llm, "deep_read", lambda blocks, scenario, **kw: dict(fake))
+    try:
+        r = client.post("/deep_read", json={"scenario": {"activities": [], "constraints": []}})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["document"] == "ops.docx"
+        assert body["constraints"][0]["type"] == "precedence"
+    finally:
+        doc_chat.clear()
+
+
+def test_deep_read_ollama_down_503(client, monkeypatch):
+    import doc_chat
+    import extract_llm
+    doc_chat.index_document([{"index": 0, "kind": "paragraph", "section_path": [],
+                              "text": "x", "is_shall": False}], "ops.docx")
+    def dead(blocks, scenario, **kw):
+        raise RuntimeError("Could not reach local Ollama model 'granite'")
+    monkeypatch.setattr(extract_llm, "deep_read", dead)
+    try:
+        r = client.post("/deep_read", json={})
+        assert r.status_code == 503
+        assert "Ollama" in r.get_json()["error"]
+    finally:
+        doc_chat.clear()

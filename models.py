@@ -246,6 +246,11 @@ class Scenario(BaseModel):
     # plan. Set it bigger (e.g. 2880 = 2 days) and the solver places activities
     # across the whole window, not just one day.
     horizon: Optional[int] = None
+    # Display names for section ids ({"srme": "Synthetic Resource Modeling Engine"}).
+    # Purely presentational: the solver keys everything on the section id; the UI shows
+    # the label on lanes/tables when present. Doc ingest fills it from an acronym
+    # glossary in the document, if one exists.
+    section_labels: dict[str, str] = {}
 
     @field_validator("horizon", mode="before")
     @classmethod

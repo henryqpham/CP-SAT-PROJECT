@@ -129,6 +129,21 @@ def test_parse_resource_forms():
     assert det.parse_resource("The system logs every event.") is None
 
 
+def test_parse_resource_slash_owner_and_via_connector():
+    # "Owner: MAR/SAIC." used to fail entirely (no "/" in the capture class) and
+    # "Conducted via CEM." wasn't a recognized connector — both real testdoc phrasings.
+    assert det.parse_resource("Owner: MAR/SAIC.") == "mar_saic"
+    assert det.parse_resource("Conducted via CEM.") == "cem"
+    assert det.parse_resource("Performed using the flight simulator.") == "flight_simulator"
+    # clause boundary: the resource stops before a trailing "prior to ..." clause
+    assert det.parse_resource("Conducted via STL prior to shipment.") == "stl"
+    # narrative "runs on the ..." is still NOT a resource (precision guard)
+    assert det.parse_resource("It runs on the control bus and shall log everything.") is None
+    # bare "run on <noun phrase>" (no article) is prose, not a resource: caught live on
+    # testdoc ("a degradation modeling run on all synthetic consumables")
+    assert det.parse_resource("Perform a modeling run on all synthetic consumables.") is None
+
+
 def test_dependency_narration_guard():
     # "after [X] is <verb>" is narration, never a prerequisite edge
     narration = {"VR-300": {"text": "The panel is checked after [VR-200] is photographed."}}
@@ -137,6 +152,18 @@ def test_dependency_narration_guard():
     dep = {"VR-300": {"text": "This activity depends on [VR-200]."}}
     edges = det.dependency_edges(dep)
     assert [(b, a) for b, a, _phrase in edges] == [("VR-200", "VR-300")]
+
+
+def test_dependency_before_prior_to_makes_reversed_edge():
+    # "performed before [X]" / "prior to [X]": THIS requirement is the prerequisite.
+    for phrase in ("This check is performed before [VR-400].",
+                   "Executed prior to [VR-400] integration events.",
+                   "Runs before [VR-400]."):
+        edges = det.dependency_edges({"VR-300": {"text": phrase}})
+        assert [(b, a) for b, a, _p in edges] == [("VR-300", "VR-400")], phrase
+    # narration guard holds for "before" too
+    narration = {"VR-300": {"text": "Alarms sound before [VR-400] is armed."}}
+    assert det.dependency_edges(narration) == []
 
 
 def test_norm_id_and_snake():

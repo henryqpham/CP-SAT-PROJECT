@@ -210,13 +210,23 @@ def solve(scenario: Scenario) -> dict:
         # Keeping an activity must always beat any layout gain, so the solver never drops one to
         # tidy up: each kept activity is worth more than the whole span can ever be.
         keep = (2 * horizon + 1) * sum(presence.values()) if presence else 0
-        # On a MULTI-DAY plan we DON'T minimize the span: that's exactly what pulls every free task
-        # to the front ("everything piles on day 1"), and with recurring occurrences day-clamped it
-        # would crush each day toward the centre. Recurrence + working_window do the placing here.
-        # The single-day base keeps the compacting term, where a tight block is what you want.
+        # On a MULTI-DAY plan we DON'T minimize the span (with recurring occurrences day-clamped it
+        # would crush each day toward the centre). But we can't leave the shape with NO objective
+        # either: CP-SAT then returns an arbitrary first-feasible layout (in practice every start at
+        # its domain minimum — the "everything piles up at 08:00" import bug). So multi-day gets a
+        # gentle tie-break: minimize the sum of starts, which gives each activity a deterministic
+        # earliest-slot-that-fits. Recurrence + working_window + section contention still do the
+        # real placing. The single-day base keeps the compacting span term, where a tight block is
+        # what you want.
+        front = sum(effective_starts)
         if n_days > 1:
             if presence:
-                model.maximize(keep)
+                # Keeping an activity must still beat any layout gain: one kept activity is worth
+                # more than the largest possible sum of starts.
+                big = (len(effective_starts) + 1) * horizon
+                model.maximize(big * sum(presence.values()) - front)
+            else:
+                model.minimize(front)
         elif presence:
             model.maximize(keep - tidy)
         else:

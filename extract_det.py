@@ -81,27 +81,43 @@ _DEP = re.compile(
     r"could|becomes?|gets?|occurs?|happens?))",
     re.I,
 )
-# The mirror image of the negative lookahead: references that ARE narration (deliberately
+# The REVERSED direction: "performed before [VR-x]" / "prior to [VR-x]" means THIS
+# requirement is the prerequisite — the edge points current -> referenced. Same
+# precision recipe as _DEP: a verb allowlist, plus a guarded bare "before".
+_DEP_BEFORE = re.compile(
+    r"(?:(?:performed|conducted|run|scheduled|started|completed|begins?|begun)\s+"
+    r"(?:before|prior\s+to)|prior\s+to)\s+\[([A-Z]{2,}-\d+)\]"
+    r"|"
+    r"before\s+\[([A-Z]{2,}-\d+)\](?!\s+(?:is|was|are|were|has|have|had|will|would|can|"
+    r"could|becomes?|gets?|occurs?|happens?))",
+    re.I,
+)
+# The mirror image of the negative lookaheads: references that ARE narration (deliberately
 # NOT dependencies). Used only to CLASSIFY cross-references for the trust log — so a
 # narration reference is reported as narration and never offered to the LLM as a
 # candidate edge (which would reopen the false-edge bug).
-_NARRATIVE_AFTER = re.compile(
-    r"after\s+\[([A-Z]{2,}-\d+)\]\s+(?:is|was|are|were|has|have|had|will|would|can|"
+_NARRATIVE_REF = re.compile(
+    r"(?:after|before)\s+\[([A-Z]{2,}-\d+)\]\s+(?:is|was|are|were|has|have|had|will|would|can|"
     r"could|becomes?|gets?|occurs?|happens?)\b",
     re.I,
 )
 
 # Resource phrasings — high-precision, anchored to the deliberate scheduling-signal
-# lead-ins ("Requires the [shared] X", "Conducted/Performed on the X", "Owner: X") and
-# stopped at a clause boundary. A shared physical test resource (the real contention)
-# wins over an owning team. These are intentionally NARROW: the loose "on the …" form
-# used to grab narrative shall-text (e.g. "on the control bus and shall log …"), so it
-# is gone — a resource we can't read confidently is left for the LLM fallback / review.
+# lead-ins ("Requires the [shared] X", "Conducted/Performed on|via|using the X",
+# "Owner: X") and stopped at a clause boundary. A shared physical test resource (the
+# real contention) wins over an owning team. These are intentionally NARROW: the loose
+# "on the …" form used to grab narrative shall-text (e.g. "on the control bus and shall
+# log …"), so it is gone — a resource we can't read confidently is left for the LLM
+# fallback / review. The capture allows "/" and "&" so org names like "MAR/SAIC" read
+# whole instead of failing the match entirely.
 _RESOURCE_PATTERNS = [
-    re.compile(r"\brequires?\s+the\s+(?:shared\s+)?([A-Za-z][A-Za-z \-]+?)(?=\s+(?:for|to|when|while)\b|[.,;]|$)", re.I),
-    re.compile(r"\b(?:conducted|performed|run)\s+on\s+the\s+([A-Za-z][A-Za-z \-]+?)(?=\s+(?:for|to|when|while)\b|[.,;]|$)", re.I),
+    re.compile(r"\brequires?\s+the\s+(?:shared\s+)?([A-Za-z][A-Za-z /&\-]+?)(?=\s+(?:for|to|when|while|prior|before|after|during)\b|[.,;]|$)", re.I),
+    # "on" REQUIRES the article ("run on the VTCM") — without it, noun phrases like
+    # "a modeling run on all consumables" false-positive. via/using/through name a
+    # system directly, so their article is optional ("Conducted via CEM").
+    re.compile(r"\b(?:conducted|performed|run)\s+(?:on\s+the|(?:via|using|through)(?:\s+the)?)\s+([A-Za-z][A-Za-z /&\-]+?)(?=\s+(?:for|to|when|while|prior|before|after|during)\b|[.,;]|$)", re.I),
 ]
-_OWNER = re.compile(r"\bOwner:\s*([A-Za-z][A-Za-z \-]+?)(?=[.,;]|$)", re.I)
+_OWNER = re.compile(r"\bOwner:\s*([A-Za-z][A-Za-z /&\-]+?)(?=[.,;]|$)", re.I)
 
 # A "Rationale: ..." line inside a requirement body — the human WHY, carried onto
 # every constraint derived from that requirement (one line; bodies join with \n).
@@ -157,6 +173,27 @@ def snake(text: str) -> str:
 def find_req_ids(text: str) -> list[str]:
     """Every bracketed [VR-xxx] id in `text` (references and headers alike)."""
     return _REQ_ID.findall(text)
+
+
+# "ACRO — Long Form" lines under a glossary/acronyms/abbreviations heading. Display-only:
+# the long form becomes the human label for a section id ("srme" -> "Synthetic Resource
+# Modeling Engine") so timeline lanes aren't cryptic lowercase codes.
+_GLOSSARY_HEADING = re.compile(r"\b(?:acronym|abbreviation|glossar)", re.I)
+_GLOSSARY_LINE = re.compile(r"^([A-Z][A-Za-z0-9/&]{1,15})\s*(?:—|–|:|-)\s+([A-Za-z][^\n]{2,79})$")
+
+
+def parse_glossary(blocks: list[dict]) -> dict:
+    """{snake(acronym): long form} from glossary-style lines in the doc, first one wins."""
+    out = {}
+    for b in blocks:
+        path = " / ".join(b.get("section_path", []))
+        if not _GLOSSARY_HEADING.search(path):
+            continue
+        for line in b["text"].splitlines():
+            m = _GLOSSARY_LINE.match(line.strip())
+            if m:
+                out.setdefault(snake(m.group(1)), m.group(2).strip())
+    return out
 
 
 def find_near_miss_ids(blocks: list[dict]) -> dict | None:
@@ -364,9 +401,12 @@ def index_requirements(blocks: list[dict]) -> dict:
             current = req_id
             if req_id in reqs:
                 # Duplicate definition: MERGE into the first occurrence (don't discard its
-                # body / dependency phrases). Keep the first label/section/id.
+                # body / dependency phrases). Keep the first label/section/id, and count the
+                # extra definition so the review modal can warn — a doc that defines the same
+                # id twice (with possibly different values) must not look clean.
                 reqs[req_id]["text"] += "\n" + b["text"].strip()
                 reqs[req_id]["source"] += " | " + b["text"].strip()
+                reqs[req_id]["definitions"] += 1
             else:
                 reqs[req_id] = {
                     "id": norm_id(req_id),
@@ -375,6 +415,7 @@ def index_requirements(blocks: list[dict]) -> dict:
                     "section": " / ".join(b.get("section_path", [])),
                     "source": b["text"].strip(),
                     "text": b["text"].strip(),
+                    "definitions": 1,
                 }
         elif b.get("kind") == "heading":
             # A new section heading ENDS the current requirement's body. Without this, a
@@ -430,6 +471,10 @@ def dependency_edges(reqs: dict) -> list[tuple[str, str, str]]:
         for m in _DEP.finditer(info["text"]):
             before = (m.group(1) or m.group(2)).upper()
             edges.append((before, rid, m.group(0)))
+        for m in _DEP_BEFORE.finditer(info["text"]):
+            # Reversed phrasing: this requirement is the prerequisite of the one it names.
+            after = (m.group(1) or m.group(2)).upper()
+            edges.append((rid, after, m.group(0)))
     return edges
 
 
@@ -450,15 +495,15 @@ def cross_reference_audit(reqs: dict, id_set: set, captured: set) -> dict:
     narrative, ambiguous = [], []
     for rid, info in reqs.items():
         text = info["text"]
-        narrated = {m.group(1).upper() for m in _NARRATIVE_AFTER.finditer(text)}
+        narrated = {m.group(1).upper() for m in _NARRATIVE_REF.finditer(text)}
         seen = set()
         for m in _REQ_ID.finditer(text):
             ref = m.group(1).upper()
             if ref == rid or ref not in id_set or ref in seen:
                 continue
             seen.add(ref)
-            if (ref, rid) in captured:
-                continue  # already a deterministic edge — resolved
+            if (ref, rid) in captured or (rid, ref) in captured:
+                continue  # already a deterministic edge (either direction) — resolved
             phrase = _ref_phrase(text, m.start())
             if ref in narrated:
                 narrative.append((rid, ref, phrase))

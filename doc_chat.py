@@ -59,6 +59,11 @@ def document_name() -> str:
     return _store["name"] if _store else ""
 
 
+def document_blocks() -> list[dict]:
+    """The last ingested document's blocks (for the deep-read pass); [] if none."""
+    return _store["blocks"] if _store else []
+
+
 def clear():
     global _store
     _store = None

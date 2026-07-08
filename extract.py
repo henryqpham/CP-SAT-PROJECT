@@ -207,6 +207,15 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     id_set = set(reqs)                            # raw req ids that actually exist
     n = len(reqs)
 
+    # Duplicate definitions are a doc-quality red flag: the copies may disagree (different
+    # durations/owners) and first-match-wins decides silently. Never let that pass unflagged.
+    duplicate_ids = [rid for rid, info in reqs.items() if info.get("definitions", 1) > 1]
+    if duplicate_ids:
+        warnings.append(
+            f"{len(duplicate_ids)} requirement id(s) are defined more than once in the document "
+            f"(first definition kept, later copies merged): {', '.join(duplicate_ids)}"
+        )
+
     # ---- DETERMINISTIC PASS (rules first) ----
     det_fields = det.resolve_activity_fields(reqs)         # duration + resource, with method tags
     det_edges = det.dependency_edges(reqs)                 # (before_raw, after_raw, phrase)
@@ -377,6 +386,13 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
             f"bind: " + ", ".join(c["label"] for c in beyond)
         )
 
+    # Human names for the section ids, read from the doc's own acronym glossary (if any):
+    # "Owner: SRME" + an appendix line "SRME — Synthetic Resource Modeling Engine" means
+    # the timeline lane can say the real name instead of a cryptic lowercase code.
+    glossary = det.parse_glossary(blocks)
+    used_sections = {det.snake(r) for r in merged_resource.values() if r}
+    section_labels = {sid: glossary[sid] for sid in sorted(used_sections) if sid in glossary}
+
     # Adapter -> current IR: the Scenario carries a single `horizon` in MINUTES (there is no
     # start_date / horizon_days field). Convert days->minutes; the derived start_date is display-only,
     # so it rides along in the coverage report rather than the schedule.
@@ -384,6 +400,7 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
         "activities": activities,
         "constraints": constraints,
         "horizon": horizon_days * 1440,
+        "section_labels": section_labels,
     }
     # Validate against the IR (the single contract). Constraint ids are auto-filled here.
     scenario = Scenario.model_validate(scenario_dict)
@@ -399,6 +416,7 @@ def extract_document(blocks: list[dict], ask=_ask_json, progress=None) -> dict:
     coverage["genre"] = "spec"
     coverage["start_date"] = start_date  # derived project start (display-only; not part of the IR)
     coverage["horizon_days"] = horizon_days  # the day-count behind the minutes horizon (for the UI)
+    coverage["duplicate_ids"] = duplicate_ids  # ids defined 2+ times (first definition won)
 
     # Nothing schedulable found: instead of a silent empty plan, help the user see WHY. The most
     # common cause is ids written "[SH 801]" (a space) that the hyphen-strict id rule can't read —

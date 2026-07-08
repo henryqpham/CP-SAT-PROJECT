@@ -376,3 +376,48 @@ def test_bare_recurring_id_in_precedence_not_dropped():
     assert s["review"]["start"] >= s["lunch#d1"]["end"]
     assert s["review"]["start"] >= s["lunch#d2"]["end"]
     assert s["review"]["start"] >= DAY + 30
+
+
+# --- multi-day tie-break objective ---
+
+def test_multiday_tiebreak_front_packs_shared_section():
+    # Two activities in one section on a 2-day horizon, no other rules: the
+    # tie-break serializes them back-to-back from t=0 (shorter first, since
+    # that minimizes the sum of starts) instead of an arbitrary layout.
+    r = run_plan(
+        [{"id": "short", "duration": 60, "section": "ops"},
+         {"id": "long", "duration": 120, "section": "ops"}],
+        [],
+        horizon=2 * DAY,
+    )
+    s = by_id(r)
+    assert s["short"]["start"] == 0
+    assert s["long"]["start"] == 60
+
+
+def test_multiday_tiebreak_is_deterministic_without_contention():
+    # No sections, no constraints: multi-day used to have NO objective, so the
+    # layout was solver whim. Now every free activity lands at t=0.
+    r = run_plan(
+        [{"id": "a", "duration": 60}, {"id": "b", "duration": 90}],
+        [],
+        horizon=3 * DAY,
+    )
+    s = by_id(r)
+    assert s["a"]["start"] == 0
+    assert s["b"]["start"] == 0
+
+
+def test_multiday_tiebreak_never_drops_optional_to_improve_layout():
+    # A conditional makes "extra" optional. Keeping it must still beat any
+    # layout gain from the tie-break term.
+    r = run_plan(
+        [{"id": "extra", "duration": 240, "section": "ops"},
+         {"id": "task", "duration": 60, "section": "ops"}],
+        [{"type": "conditional",
+          "when": {"activity": "extra", "present": False},
+          "then": {"set_duration": {"activity": "task", "factor": 2}}}],
+        horizon=2 * DAY,
+    )
+    s = by_id(r)
+    assert "extra" in s  # kept, not sacrificed for a smaller sum of starts

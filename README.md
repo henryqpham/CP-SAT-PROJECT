@@ -41,17 +41,24 @@ your sections. See [REQUIREMENTS.md](REQUIREMENTS.md) for the North Star + roadm
   the timeline by any real field — **Section · Type · Assignee** (the owner/worker/crew you set per
   activity) — no re-solve. Fitted single-day or multi-day (per-day markers). Plus the "On this plan"
   roster and the searchable Library (with "+ New").
-- A capacity health bar (used vs. your horizon: over / under / time left).
+- A capacity health bar (booked **work** — the sum of scheduled minutes — vs. your horizon:
+  over / under / time left; "finishes" shows when the plan actually wraps up).
 - Live auto-solve; keep the last good timeline (dimmed) when a change breaks it.
 - When a plan is INFEASIBLE, a "which rules conflict?" explainer lists the minimal conflicting
   rules (with one-click disable). Load the **Lake day (over-constrained)** example to see it.
 - Undo/redo, plus duplicate a plan and export/import it as a JSON file (all local, no cloud).
 - **Document ingest, two genres** — import a `.docx` (topbar **📄 Import doc**); `/extract` auto-detects
   the genre. A requirements **spec** runs the deterministic rules-first pass (`ingest.py` →
-  `extract_det.py` → `extract.py`): durations, resources, dependencies, dated deadlines, stated
-  operating hours (`working_window`), aggregate time caps (`section_budget`), "during/concurrent
+  `extract_det.py` → `extract.py`): durations, resources, dependencies (both directions:
+  "after [X]" and "before / prior to [X]"), dated deadlines, stated operating hours
+  (`working_window`), aggregate time caps (`section_budget`), "during/concurrent
   with" overlaps, a `Rationale:` line onto every derived rule, and RFC-2119 priority grading
   (shall=1, should=3, may=5); local Ollama fills **only** a residual field a rule couldn't read.
+  Doc-quality tripwires surface in the review modal: ids defined **more than once** are flagged
+  (first definition wins, never silently), and off-format cross-references the rules couldn't
+  confirm are listed with one-click "add as precedence" in either direction. If the doc carries
+  an acronym glossary ("SRME — Synthetic Resource Modeling Engine"), section lanes show the
+  long name (`Scenario.section_labels`, display-only).
   An ops **schedule** doc (day tables + rule bullets, see `testdata/artemis_3day_schedule.docx`)
   runs `extract_sched.py`, fully deterministic: the bullets become the RULES (adjacency, max-gaps,
   awake-span caps, buffers, daily windows) and the tables become the ROSTER (recurring vs per-day
@@ -104,6 +111,13 @@ endpoints:
 - **`/extract`** — upload a `.docx`; auto-detects the genre (requirements spec vs ops schedule) and
   returns `{scenario, coverage, warnings}`. The dashboard shows it for **review** before it loads
   into a plan, so a dropped or mis-read rule is caught before anything is scheduled.
+- **`/deep_read`** — the LLM-first reader (`extract_llm.py`): the local model sweeps the last
+  imported document in overlapping chunks — no ids, headers, or layout assumed — and reports
+  scheduling facts as typed notes (tasks, relations by name, recurrence, evidence quotes). A
+  consolidation pass resolves them against the deterministic extraction and returns **proposals**
+  (`{activities, constraints, couldnt_model}`); the review modal shows each one with a checkbox
+  and its quoted sentence — nothing the model says enters the plan unreviewed. On-demand from the
+  review modal's **🧠 Deep read** button (503 when Ollama is down).
 - **`/doc_chat`** — a question about the last imported document; answers from retrieved blocks with
   the sources attached (local embeddings + local chat model; 503 when Ollama is down).
 - **`/assist`** — one assistant turn: the local model edits a copy of the posted scenario through
@@ -119,7 +133,9 @@ flowchart LR
     subgraph FLASK["Flask app (app.py)"]
         direction TB
         SOLVE["/solve + /fill<br/>CP-SAT (live solve · pack the window)"]
+        EXPLAIN["/explain + /relax<br/>conflict set · priority-ordered relax"]
         EXTRACT["/extract<br/>ingest.py → genre auto-detect<br/>spec: extract_det.py + extract.py<br/>schedule: extract_sched.py (+ self-check)"]
+        DEEPREAD["/deep_read<br/>extract_llm.py — LLM-first reader<br/>(chunk sweep → reviewed proposals)"]
         DOCCHAT["/doc_chat<br/>doc_chat.py — RAG over the doc<br/>(cited answers, local embeddings)"]
         ASSIST["/assist<br/>assistant.py — typed tools<br/>(validated edits, local model)"]
         EXAMPLE["/example<br/>demo IR"]
@@ -128,8 +144,11 @@ flowchart LR
     end
 
     FE -->|"edit (debounced auto-solve)"| SOLVE -->|schedule| FE
+    FE -->|"Which rules conflict?"| EXPLAIN -->|conflict rows / relaxed plan| FE
     FE -->|"Import doc"| EXTRACT -->|"{scenario, coverage} → review, then load"| FE
     EXTRACT -.blocks stay in memory.-> DOCCHAT
+    EXTRACT -.same blocks.-> DEEPREAD
+    FE -->|"🧠 Deep read"| DEEPREAD -->|"proposals + evidence → accept/reject"| FE
     FE -->|"Ask the doc"| DOCCHAT -->|"answer + sources"| FE
     FE -->|"Assistant"| ASSIST -->|"new scenario + what changed"| FE
     FE -->|"Load example"| EXAMPLE -->|editable IR| FE
@@ -146,13 +165,14 @@ rule, watch it react — in any order.
 
 ```
 CP-SAT-PROJECT/
-├── app.py               # Flask: / (dashboard), /solve, /fill (pack the window), /explain, /relax, /extract (.docx ingest, genre auto-detect), /doc_chat (ask the doc), /assist (plan assistant), /example[/<name>] + /examples. /parse kept but dormant.
+├── app.py               # Flask: / (dashboard), /solve, /fill (pack the window), /explain, /relax, /extract (.docx ingest, genre auto-detect), /deep_read (LLM-first reader), /doc_chat (ask the doc), /assist (plan assistant), /example[/<name>] + /examples. /parse kept but dormant.
 ├── models.py            # Pydantic IR: Activity (+ section, display-only assignee/type, provenance label/source) + constraint union — the JSON contract
 ├── solver.py            # Scenario -> CP-SAT: solve() (live), solve_fill() (pack, separate objective), explain_infeasible(), relax_by_priority()
 ├── ingest.py            # .docx -> ordered, provenance-tagged blocks (headings, [VR-xxx], dates, "shall", bullets, table cells with row/col); in-memory, zip-bomb-guarded
 ├── extract_det.py       # deterministic spec rules: duration/resource/dependencies/deadlines/rationale/working-hours/budgets/overlaps (no LLM)
 ├── extract.py           # genre dispatch + the spec pipeline: rules first, local Ollama ONLY for residual fields; RFC-2119 priority grading
 ├── extract_sched.py     # schedule-genre extraction: rule bullets + day tables -> rules + roster, plus the doc self-check (no LLM)
+├── extract_llm.py       # the LLM-first READER (/deep_read): chunked whole-doc sweep with the local model -> reviewed proposals (never writes into the plan)
 ├── doc_chat.py          # Ask the doc: local embeddings over the ingested blocks, cited answers (the one RAG feature)
 ├── assistant.py         # plan assistant: local Ollama tool-calling over typed, IR-validated edit tools
 ├── parse.py             # DORMANT: local Ollama sentence -> Scenario (AI path, off for the MVP)
@@ -245,7 +265,11 @@ Activities run free across the planning **horizon** — one 24h day by default, 
 `"horizon"` (in minutes) on the scenario for a multi-day window (e.g. `2880` = 2 days). Per-activity
 `time_window` constraints are what pin them down — their `earliest` / `latest_end` are clock times on
 a chosen `day` (0-based; omit it for day 1), so multi-day deadlines like "undock by 18:00 on day 3"
-work directly. Full example in `examples/lake.json`:
+work directly. On a multi-day plan the solver adds a gentle tie-break (minimize the sum of starts),
+so free activities land in a deterministic earliest-slot layout instead of solver whim. The scenario
+can also carry `section_labels` ({"srme": "Synthetic Resource Modeling Engine"}) — display names for
+section ids, filled by doc ingest from the document's own glossary; the solver ignores them.
+Full example in `examples/lake.json`:
 
 ```jsonc
 {

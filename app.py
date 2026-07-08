@@ -15,6 +15,7 @@ from parse import parse_sentence  # noqa: E402
 from solver import explain_infeasible, relax_by_priority, solve, solve_fill  # noqa: E402
 from ingest import extract_blocks  # noqa: E402
 from extract import extract_document  # noqa: E402
+import extract_llm  # noqa: E402
 import doc_chat  # noqa: E402
 from assistant import assist  # noqa: E402
 
@@ -143,6 +144,30 @@ def extract_route():
     except Exception:  # unexpected parse failure — keep the message generic, don't leak a stack trace
         return jsonify({"error": "Extraction failed while reading the document. "
                                  "Check that it's a valid .docx and try again."}), 500
+
+
+@app.post("/deep_read")
+def deep_read_route():
+    # The LLM-first reader: the local model sweeps the last imported document in chunks
+    # (extract_llm.py) and returns PROPOSALS {activities, constraints, couldnt_model} that
+    # the review modal shows with per-item accept — the model never writes into the plan
+    # directly. Needs a prior /extract in this server session (blocks live in memory only).
+    if not doc_chat.has_document():
+        return jsonify({"error": "Import a document first — deep read works on the last "
+                                 "imported .docx."}), 400
+    body = request.get_json(silent=True) or {}
+    scenario = body.get("scenario") or {"activities": [], "constraints": []}
+    try:
+        result = extract_llm.deep_read(doc_chat.document_blocks(), scenario)
+        result["document"] = doc_chat.document_name()
+        # Ollama died mid-sweep with nothing read: surface it as the outage it is.
+        if not result["calls"] and result["errors"]:
+            return jsonify({"error": result["errors"][0]}), 503
+        return jsonify(result)
+    except RuntimeError as e:  # Ollama not running / model not pulled
+        return jsonify({"error": str(e)}), 503
+    except Exception:
+        return jsonify({"error": "The deep read failed unexpectedly. The plan is untouched."}), 502
 
 
 @app.post("/doc_chat")
